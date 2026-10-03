@@ -1,0 +1,4 @@
+Repository: https://github.com/D4V1ND/tech_europe
+Commit: 9d7026d6441153032b4bc1d93050bfd1d825296a
+Vendored files: drawing2cad/partspec.py, drawing2cad/cad_generator.py, drawing2cad/validator.py, drawing2cad/prompts.py
+License: MIT

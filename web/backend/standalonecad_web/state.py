@@ -1,0 +1,178 @@
+from __future__ import annotations
+
+from typing import Any
+
+from standalonecad.core.topology import edge_records, face_records
+
+
+def _interface_names(interfaces: dict[str, Any] | None) -> list[str]:
+    out: list[str] = []
+    for group in ("imates", "work_planes", "work_axes", "work_points", "origin_geometry"):
+        out.extend(str(x.get("name")) for x in (interfaces or {}).get(group, []) if x.get("name"))
+    return sorted(set(out))
+
+
+def _topology_summary(shape: Any, *, max_faces: int = 96, max_edges: int = 144) -> dict[str, Any]:
+    """Compact local topology for agent grounding; never mutates the occurrence shape."""
+    if shape is None:
+        return {"faces": [], "edges": []}
+    try:
+        faces = face_records(shape)
+    except Exception:
+        faces = []
+    try:
+        edges = edge_records(shape)
+    except Exception:
+        edges = []
+
+    face_keys = ("id", "semantic", "semantics", "geom", "center", "center_norm", "area", "normal", "direction", "radius_mm", "axis", "axis_direction", "edge_count")
+    edge_keys = ("id", "geom", "center", "center_norm", "length", "vertices", "direction", "radius_mm", "adjacent_face_geoms", "adjacent_face_count")
+    return {
+        "faces": [{k: row[k] for k in face_keys if row.get(k) is not None} for row in faces[:max_faces]],
+        "edges": [{k: row[k] for k in edge_keys if row.get(k) is not None} for row in edges[:max_edges]],
+        "face_count": len(faces),
+        "edge_count": len(edges),
+    }
+
+
+def planning_state(engine) -> dict[str, Any]:
+    """Byte-semantics parity with Qt desktop `_planning_state`.
+
+    Keep this deliberately *smaller* than public_state.  The planner must receive
+    the same keys, values, ordering, topology limits, selection provenance, and
+    document metadata as the original MCP/desktop v10.6.0 UI.
+    """
+    with engine.lock:
+        doc = engine.doc
+        if doc is None:
+            return {
+                "document": None,
+                "parameters": {},
+                "sketches": [],
+                "features": [],
+                "selection": {},
+                "faces": [],
+                "edges": [],
+                "origin_interfaces": ["YZ Plane", "XZ Plane", "XY Plane", "X Axis", "Y Axis", "Z Axis", "Center Point"],
+                "open_documents": engine.document_sessions(),
+            }
+
+        try:
+            params = {k: {"expression": v.expression, "unit": v.unit} for k, v in doc.parameters.items()}
+        except Exception:
+            params = {}
+        try:
+            topo = doc.topology()
+        except Exception:
+            topo = {"faces": [], "edges": [], "vertices": []}
+        selection = dict(engine.selection)
+        if selection.get("type") in ("face", "edge"):
+            try:
+                selection_kind = str(selection.get("type"))
+                ref_key = "face_ref" if selection_kind == "face" else "edge_ref"
+                ref = selection.get(ref_key)
+                prov = doc.selection_provenance(ref, selection_kind) if ref else None
+                if prov:
+                    selection["created_by_feature"] = prov
+
+                raw_items = selection.get("items")
+                if isinstance(raw_items, list):
+                    items: list[dict[str, Any]] = []
+                    for raw in raw_items:
+                        if not isinstance(raw, dict):
+                            continue
+                        item = dict(raw)
+                        item_ref = item.get(ref_key)
+                        item_prov = doc.selection_provenance(item_ref, selection_kind) if item_ref else None
+                        if item_prov:
+                            item["created_by_feature"] = item_prov
+                        items.append(item)
+                    selection["items"] = items
+            except Exception:
+                pass
+        return {
+            "document": {
+                "title": doc.title,
+                "type": doc.doc_type,
+                "units": doc.units,
+                "revision": engine.revision,
+                "has_geometry": doc.shape is not None,
+            },
+            "parameters": params,
+            "sketches": [
+                {
+                    "name": sk.name,
+                    "plane": sk.plane,
+                    "closed": sk.closed,
+                    "entities": [{"id": e.tag, "kind": e.kind, "data": e.data} for e in sk.entities],
+                    "dimensions": sk.dimensions,
+                    "constraints": sk.constraints,
+                }
+                for sk in doc.sketches.values()
+            ],
+            "sketches3d": [dict(v) for v in getattr(doc, "sketches3d", {}).values()],
+            "work_features": {
+                "planes": [dict(v) for v in getattr(doc, "work_planes", {}).values()],
+                "axes": [dict(v) for v in getattr(doc, "work_axes", {}).values()],
+                "points": [dict(v) for v in getattr(doc, "work_points", {}).values()],
+            },
+            "features": [{"name": f.name, "kind": f.kind, "operation": f.operation, "params": f.params} for f in doc.features],
+            "origin_interfaces": _interface_names(doc.list_interfaces()),
+            "occurrences": [
+                {
+                    "name": o.name,
+                    "grounded": o.grounded,
+                    "position_mm": list(o.position_mm),
+                    "rotation_deg_xyz": list(o.rotation_deg_xyz),
+                    "interfaces": _interface_names(getattr(o, "interfaces", {})),
+                    # Local (component-space) persistent topology ids.  Assembly joint
+                    # GeometryIntent selectors resolve against occurrence.shape, so these
+                    # ids are directly reusable without guessing near_mm coordinates.
+                    "topology": _topology_summary(getattr(o, "shape", None)),
+                }
+                for o in getattr(doc, "occurrences", {}).values()
+            ],
+            "constraints": [vars(c).copy() for c in getattr(doc, "constraints", [])],
+            "joints": [vars(j).copy() for j in getattr(doc, "joints", [])],
+            "selection": selection,
+            "faces": topo.get("faces", [])[:160],
+            "edges": topo.get("edges", [])[:240],
+            "open_documents": engine.document_sessions(),
+        }
+
+
+def public_state(engine) -> dict[str, Any]:
+    """Browser/UI state.  UI-only metadata is added *after* planner parity state."""
+    state = planning_state(engine)
+    state.pop("faces", None)
+    state.pop("edges", None)
+    with engine.lock:
+        doc = engine.doc
+        if doc is None:
+            state.setdefault("sketches3d", [])
+            state.setdefault("work_features", {"planes": [], "axes": [], "points": []})
+            state.setdefault("occurrences", [])
+            state.setdefault("constraints", [])
+            state.setdefault("joints", [])
+            state["undo_available"] = False
+            state["redo_available"] = False
+        else:
+            state["document"] = dict(state.get("document") or {})
+            state["document"]["dirty"] = bool(doc.dirty)
+            state["document"]["view_orientation"] = doc.view_orientation
+            feature_by_name = {f.name: f for f in doc.features}
+            for row in state.get("features", []):
+                feature = feature_by_name.get(row.get("name"))
+                row["suppressed"] = bool(getattr(feature, "suppressed", False)) if feature else False
+            occurrence_by_name = {o.name: o for o in getattr(doc, "occurrences", {}).values()}
+            for row in state.get("occurrences", []):
+                occurrence = occurrence_by_name.get(row.get("name"))
+                row["suppressed"] = bool(getattr(occurrence, "suppressed", False)) if occurrence else False
+                row["reference_status"] = getattr(occurrence, "reference_status", "resolved") if occurrence else "resolved"
+            state["undo_available"] = bool(engine._undo)
+            state["redo_available"] = bool(engine._redo)
+    state["open_documents"] = [
+        {key: value for key, value in row.items() if key != "path"}
+        for row in state.get("open_documents", [])
+    ]
+    return state
