@@ -6,6 +6,7 @@ import hashlib
 import hmac
 import html
 import json
+import os
 import secrets
 import threading
 import time
@@ -21,12 +22,14 @@ from sqlalchemy.orm import Session
 
 from standalonecad.recovery import execute_with_failure_recovery
 
-from ..ai_credentials import PROVIDER_LABELS, SUPPORTED_PROVIDERS, provider_ai, provider_connection, remove_provider, select_provider, selected_ai
+from ..ai_credentials import PROVIDER_LABELS, SUPPORTED_PROVIDERS, provider_ai, provider_connection, remove_provider, select_provider, selected_ai, shared_openai_enabled
 from ..auth import CurrentUser
 from ..cad_runtime import runtime_manager
 from ..database import db_session, get_db
 from ..config import settings
-from ..models import AIProviderConnection, ChatMessage
+from ..models import AIProviderConnection, ChatMessage, ConversationState
+from ..heavy_jobs import HeavyJobBusy, heavy_job_manager
+from ..isolated_execution import run_isolated
 from ..providers import provider_for_user, selected_provider_name
 from ..providers.anthropic_api import AnthropicAPIProvider
 from ..providers.copilot_sdk import CopilotSDKProvider
@@ -38,12 +41,13 @@ from ..schemas import AIProviderConnectRequest, AIProviderSelectRequest, PromptR
 from ..state import planning_state
 from ..web_agent import APICompatibleAgent, DesktopParityCodexAgent
 from ..nemotron_codex_agent import NemotronAugmentedCodexAgent
+from ..nemotron_api_agent import NemotronAugmentedAPIAgent
 from ..nemotron_program_v10 import NemotronProgramAgent, execute_nemotron_program_with_repair
 from .projects import owned_project
 
 
 router = APIRouter(prefix="/ai", tags=["ai"])
-ai_turn_slots = threading.BoundedSemaphore(settings.max_concurrent_ai_turns)
+PROMPT_JOB_HARD_TIMEOUT_SECONDS = max(300, int(os.getenv("CADIA_PROMPT_JOB_HARD_TIMEOUT", "7200")))
 cancel_lock = threading.RLock()
 cancel_events: dict[tuple[str, str], threading.Event] = {}
 active_agents: dict[tuple[str, str], Any] = {}
@@ -52,6 +56,141 @@ active_agents: dict[tuple[str, str], Any] = {}
 GITHUB_AUTHORIZE_URL = "https://github.com/login/oauth/authorize"
 GITHUB_TOKEN_URL = "https://github.com/login/oauth/access_token"
 GITHUB_USER_URL = "https://api.github.com/user"
+
+
+# CADIA_CONVERSATIONAL_CONTEXT_V1
+CONVERSATION_HISTORY_TURNS = max(4, min(30, int(os.getenv("CADIA_CONVERSATION_HISTORY_TURNS", "16"))))
+CONVERSATION_HISTORY_CHARS = max(4000, min(30000, int(os.getenv("CADIA_CONVERSATION_HISTORY_CHARS", "12000"))))
+
+
+def _recent_conversation(project_id: str) -> list[dict[str, str]]:
+    with db_session() as db:
+        rows = list(db.scalars(
+            select(ChatMessage)
+            .where(ChatMessage.project_id == project_id)
+            .order_by(ChatMessage.created_at.desc())
+            .limit(CONVERSATION_HISTORY_TURNS)
+        ).all())
+    # Preserve the newest turns when the character budget is reached.
+    selected: list[dict[str, str]] = []
+    used = 0
+    for row in rows:
+        role = str(getattr(row, "role", "") or "")
+        if role not in {"user", "assistant"}:
+            continue
+        content = str(getattr(row, "content", "") or "").strip()
+        if not content:
+            continue
+        if len(content) > 2400:
+            content = content[:2400] + "…"
+        remaining = CONVERSATION_HISTORY_CHARS - used
+        if remaining <= 0:
+            break
+        if len(content) > remaining:
+            content = content[-remaining:]
+        selected.append({"role": role, "content": content})
+        used += len(content)
+    selected.reverse()
+    return selected
+
+
+def _planning_state_with_conversation(engine, history: list[dict[str, str]], pending: dict[str, Any] | None = None) -> dict[str, Any]:
+    state = planning_state(engine)
+    if history:
+        state["_conversation_context"] = history
+    if pending and pending.get("status") == "waiting_user":
+        state["_pending_clarification"] = pending
+    return state
+
+
+def _conversation_prompt(prompt: str, history: list[dict[str, str]], pending: dict[str, Any] | None = None) -> str:
+    parts: list[str] = []
+    if history:
+        parts.append(
+            "PRIOR_PROJECT_CONVERSATION (use only to resolve follow-ups; live CAD state/tools are authoritative):\n"
+            + json.dumps(history, ensure_ascii=False, separators=(",", ":"))
+        )
+    if pending and pending.get("status") == "waiting_user":
+        parts.append(
+            "PENDING_CLARIFICATION (the current user message normally answers this; resume the original task when resolved):\n"
+            + json.dumps(pending, ensure_ascii=False, separators=(",", ":"))
+        )
+    parts.append("CURRENT_USER_REQUEST:\n" + prompt)
+    return "\n\n".join(parts)
+
+
+def _planner_interaction(plan: dict[str, Any]) -> dict[str, Any] | None:
+    if not isinstance(plan, dict) or plan.get("calls"):
+        return None
+    kind = str(plan.get("response_type") or "").strip().lower()
+    if kind not in {"clarify", "answer"}:
+        return None
+    message = str(plan.get("message") or "").strip()
+    options = [str(x).strip() for x in (plan.get("options") or []) if str(x).strip()][:6]
+    if not message:
+        return None
+    display = message
+    if kind == "clarify" and options:
+        display += "\n" + "\n".join(f"{i + 1}. {value}" for i, value in enumerate(options))
+    return {"type": kind, "message": display, "options": options}
+
+
+# CADIA_TALKCAD_STATE_MACHINE_V1
+def _pending_conversation(project_id: str) -> dict[str, Any] | None:
+    with db_session() as db:
+        row = db.get(ConversationState, project_id)
+        if row is None or str(row.status or "idle") != "waiting_user":
+            return None
+        try:
+            options = json.loads(row.pending_options_json or "[]")
+        except Exception:
+            options = []
+        try:
+            context = json.loads(row.pending_context_json or "{}")
+        except Exception:
+            context = {}
+        question = str(row.pending_question or "")
+    return {
+        "status": "waiting_user",
+        "question": question,
+        "options": [str(x) for x in options if str(x).strip()][:6],
+        "original_request": str(context.get("original_request") or ""),
+        "selection": context.get("selection") or {},
+        "document_revision": context.get("document_revision"),
+        "provider": context.get("provider"),
+    }
+
+
+def _set_pending_conversation(project_id: str, *, original_request: str, interaction: dict[str, Any], state: dict[str, Any], provider: str) -> None:
+    question = str(interaction.get("message") or "").strip()
+    options = [str(x).strip() for x in (interaction.get("options") or []) if str(x).strip()][:6]
+    document = state.get("document") if isinstance(state.get("document"), dict) else {}
+    context = {
+        "original_request": original_request,
+        "selection": state.get("selection") or {},
+        "document_revision": document.get("revision", state.get("revision")),
+        "provider": provider,
+    }
+    with db_session() as db:
+        row = db.get(ConversationState, project_id)
+        if row is None:
+            row = ConversationState(project_id=project_id)
+            db.add(row)
+        row.status = "waiting_user"
+        row.pending_question = question
+        row.pending_options_json = json.dumps(options, ensure_ascii=False, separators=(",", ":"))
+        row.pending_context_json = json.dumps(context, ensure_ascii=False, separators=(",", ":"))
+
+
+def _clear_pending_conversation(project_id: str) -> None:
+    with db_session() as db:
+        row = db.get(ConversationState, project_id)
+        if row is None:
+            return
+        row.status = "idle"
+        row.pending_question = None
+        row.pending_options_json = "[]"
+        row.pending_context_json = "{}"
 
 
 def _github_ready() -> None:
@@ -112,6 +251,8 @@ def _codex_connected(user_id: str) -> bool:
 
 
 def _stored_connected(db: Session, user_id: str, provider: str) -> bool:
+    if provider == "openai" and shared_openai_enabled():
+        return True
     row = provider_connection(db, user_id, provider)
     return bool(row and row.encrypted_api_key)
 
@@ -234,9 +375,12 @@ def providers(user: CurrentUser, db: Session = Depends(get_db)):
             connected = codex_connected
         elif provider == "nemotron":
             connected = _nemotron_connected()
+        elif provider == "openai" and shared_openai_enabled():
+            connected = True
         else:
             connected = bool(stored.get(provider) and stored[provider].encrypted_api_key)
-        configured_model = stored.get(provider).model if stored.get(provider) else None
+        configured_model = (settings.openai_api_model if provider == "openai" and shared_openai_enabled() else
+                            (stored.get(provider).model if stored.get(provider) else None))
         if provider == "nemotron" and not configured_model:
             try:
                 configured_model = _nemotron_provider().default_model
@@ -248,6 +392,7 @@ def providers(user: CurrentUser, db: Session = Depends(get_db)):
             "configured": connected,
             "connected": connected,
             "selected": provider == selected.provider,
+            "serverProvided": provider == "openai" and shared_openai_enabled(),
             "model": configured_model,
         })
     return {"selected": selected.provider, "autoFallback": settings.ai_auto_fallback, "providers": result}
@@ -264,17 +409,22 @@ def choose_provider(payload: AIProviderSelectRequest, user: CurrentUser, db: Ses
     elif provider_name == "nemotron":
         if not _nemotron_connected():
             raise HTTPException(status_code=503, detail="NVIDIA Nemotron is not configured on this server.")
+    elif provider_name == "openai" and shared_openai_enabled():
+        # CADIA_FREE_PLAN_AI_V101_SHARED_SELECT
+        # Server-owned CADia AI does not require a per-user OpenAI API key.
+        pass
     elif not _stored_connected(db, user.id, provider_name):
         raise HTTPException(status_code=401, detail=f"Connect {PROVIDER_LABELS[provider_name]} first.")
     current = provider_ai(db, user.id, provider_name)
-    selected_model = current.model or (_nemotron_provider().default_model if provider_name == "nemotron" else None)
+    selected_model = (settings.openai_api_model if provider_name == "openai" and shared_openai_enabled() else
+                      (current.model or (_nemotron_provider().default_model if provider_name == "nemotron" else None)))
     select_provider(db, user.id, provider_name, model=selected_model)
     db.commit()
     return _provider_payload(
         provider_name,
         connected=True,
         model=selected_model,
-        account={"type": "oauth" if provider_name == "copilot" else ("server" if provider_name == "nemotron" else "stored"), "planType": PROVIDER_LABELS[provider_name]},
+        account={"type": "server" if (provider_name == "nemotron" or (provider_name == "openai" and shared_openai_enabled())) else ("oauth" if provider_name == "copilot" else "stored"), "planType": PROVIDER_LABELS[provider_name]},
     )
 
 
@@ -363,6 +513,13 @@ def connect_provider(payload: AIProviderConnectRequest, user: CurrentUser, db: S
             account={"type": "server", "email": None, "planType": "Nebius Token Factory"},
         )
 
+    if provider_name == "openai" and shared_openai_enabled():
+        # Do not store the operator key in any user's credential row.
+        select_provider(db, user.id, "openai", model=settings.openai_api_model)
+        db.commit()
+        return _provider_payload("openai", connected=True, model=settings.openai_api_model,
+                                 account={"type": "server", "planType": "CADia shared OpenAI API"})
+
     api_key = (payload.api_key or "").strip()
     if not api_key:
         raise HTTPException(status_code=422, detail="Enter an API key.")
@@ -393,6 +550,8 @@ def disconnect_provider(user: CurrentUser, db: Session = Depends(get_db)):
         except Exception:
             pass
         return _provider_payload(selected.provider, connected=False)
+    if selected.provider == "openai" and shared_openai_enabled():
+        raise HTTPException(status_code=403, detail="Server-owned OpenAI API cannot be disconnected. Select a different provider instead.")
     remove_provider(db, user.id, selected.provider)
     db.commit()
     return _provider_payload("codex", connected=False)
@@ -431,7 +590,8 @@ def account(user: CurrentUser, db: Session = Depends(get_db)):
         selected.provider,
         connected=True,
         model=selected.model,
-        account={"type": "api", "email": None, "planType": PROVIDER_LABELS[selected.provider]},
+        account={"type": "server" if selected.provider == "openai" and shared_openai_enabled() else "api",
+                 "email": None, "planType": "CADia shared OpenAI API" if selected.provider == "openai" and shared_openai_enabled() else PROVIDER_LABELS[selected.provider]},
     )
 
 
@@ -489,6 +649,12 @@ def models(user: CurrentUser, db: Session = Depends(get_db)):
         if not provider.configured:
             raise HTTPException(status_code=503, detail="NVIDIA Nemotron is not configured on this server.")
         return {"models": _model_rows(provider, selected.model or provider.default_model)}
+    if selected.provider == "openai" and shared_openai_enabled():
+        model = settings.openai_api_model
+        return {"models": [{"id": model, "model": model, "displayName": "GPT-6.1 Sol · CADia shared API",
+                            "isDefault": True,
+                            "supportedReasoningEfforts": [{"reasoningEffort": "low"}, {"reasoningEffort": "medium"}, {"reasoningEffort": "high"}],
+                            "defaultReasoningEffort": "medium"}]}
     if not selected.api_key:
         raise HTTPException(status_code=401, detail="AI API connection is required.")
     try:
@@ -508,9 +674,20 @@ def rate_limits(user: CurrentUser, db: Session = Depends(get_db)):
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
+@router.get("/projects/{project_id}/conversation-state")
+def conversation_state(project_id: str, user: CurrentUser, db: Session = Depends(get_db)):
+    owned_project(db, user.id, project_id)
+    pending = _pending_conversation(project_id)
+    if not pending:
+        return {"status": "idle", "pendingQuestion": None, "options": []}
+    return {"status": "waiting_user", "pendingQuestion": pending.get("question"), "options": pending.get("options") or []}
+
+
 def _execute_prompt_body(user_id: str, project_id: str, payload: PromptRequest, on_event=None):
     runtime = runtime_manager.get(user_id, project_id)
     provider_name = selected_provider_name(user_id)
+    history = _recent_conversation(project_id)
+    pending = _pending_conversation(project_id)
 
     # Copilot follows the ipt-mcp architecture directly:
     # Copilot SDK -> CADia project MCP -> existing 118 tools -> existing executor/core.
@@ -528,7 +705,7 @@ def _execute_prompt_body(user_id: str, project_id: str, payload: PromptRequest, 
         try:
             message = agent.run_mcp_turn(
                 project_id,
-                prompt,
+                _conversation_prompt(prompt, history, pending),
                 model=payload.model or cfg.model or "auto",
                 effort=payload.effort,
                 on_event=on_event,
@@ -536,6 +713,8 @@ def _execute_prompt_body(user_id: str, project_id: str, payload: PromptRequest, 
             with db_session() as db:
                 db.add(ChatMessage(project_id=project_id, role="user", content=prompt))
                 db.add(ChatMessage(project_id=project_id, role="assistant", content=message))
+            if pending:
+                _clear_pending_conversation(project_id)
             return {"message": message, "state": runtime.state()}
         finally:
             with cancel_lock:
@@ -574,7 +753,10 @@ def _execute_prompt_body(user_id: str, project_id: str, payload: PromptRequest, 
     else:
         # Other API providers retain the pre-Copilot API-compatible path.
         provider = provider_for_user(user_id)
-        agent = APICompatibleAgent(provider, model=payload.model, reasoning=payload.effort)
+        agent_cls = NemotronAugmentedAPIAgent if provider_name == "openai" else APICompatibleAgent
+        agent = agent_cls(provider,
+                          model=settings.openai_api_model if provider_name == "openai" and shared_openai_enabled() else payload.model,
+                          reasoning="medium" if provider_name == "openai" and shared_openai_enabled() else payload.effort)
 
     # All planner-style providers converge on the common execution path below.
 
@@ -589,6 +771,7 @@ def _execute_prompt_body(user_id: str, project_id: str, payload: PromptRequest, 
     with cancel_lock:
         active_agents[key] = agent
     verification_response: dict[str, Any] | None = None
+    interaction_response: dict[str, Any] | None = None
     try:
         with runtime.operation_lock:
             if provider_name == "nemotron":
@@ -596,24 +779,48 @@ def _execute_prompt_body(user_id: str, project_id: str, payload: PromptRequest, 
                     runtime=runtime,
                     agent=agent,
                     user_prompt=agent_prompt,
-                    current_state=planning_state(runtime.engine),
+                    current_state=_planning_state_with_conversation(runtime.engine, history, pending),
                     on_event=on_event,
                     max_repairs=1,
                 )
                 message = str(executed_program["message"])
+                raw_interaction = executed_program.get("interaction")
+                if isinstance(raw_interaction, dict):
+                    interaction_response = raw_interaction
+                    if raw_interaction.get("type") == "clarify":
+                        _set_pending_conversation(
+                            project_id, original_request=prompt, interaction=raw_interaction,
+                            state=_planning_state_with_conversation(runtime.engine, history, pending), provider=provider_name,
+                        )
+                    else:
+                        _clear_pending_conversation(project_id)
             else:
                 # CADIA_VERIFIED_HYBRID_ROUTE_V4
                 # Keep Codex as the executable planner. For the hybrid `codex` provider only,
                 # Nemotron may audit the *successful* result against source-grounded requirements.
                 # Any automatic correction is bounded to one local repair and requires a separate
                 # deterministic evidence gate; audit/repair failures preserve the successful model.
-                before_state = planning_state(runtime.engine)
+                before_state = _planning_state_with_conversation(runtime.engine, history, pending)
                 plan = agent.plan(agent_prompt, before_state, on_event=on_event)
+                interaction = _planner_interaction(plan)
+                if interaction is not None:
+                    message = interaction["message"]
+                    if interaction.get("type") == "clarify":
+                        _set_pending_conversation(
+                            project_id, original_request=prompt, interaction=interaction,
+                            state=before_state, provider=provider_name,
+                        )
+                    else:
+                        _clear_pending_conversation(project_id)
+                    with db_session() as db:
+                        db.add(ChatMessage(project_id=project_id, role="user", content=prompt))
+                        db.add(ChatMessage(project_id=project_id, role="assistant", content=message))
+                    return {"message": message, "state": runtime.state(), "interaction": interaction}
                 executed = execute_with_failure_recovery(
                     executor=runtime.executor,
                     agent=agent,
                     user_prompt=agent_prompt,
-                    state_provider=lambda: planning_state(runtime.engine),
+                    state_provider=lambda: _planning_state_with_conversation(runtime.engine, history, pending),
                     plan=plan,
                     on_event=on_event,
                     initial_progress_span=(25, 70),
@@ -623,7 +830,7 @@ def _execute_prompt_body(user_id: str, project_id: str, payload: PromptRequest, 
                     raise RuntimeError("Modeling failed: " + str(executed.error or "unknown error"))
                 message = executed.message
 
-                if provider_name == "codex" and isinstance(agent, NemotronAugmentedCodexAgent) and agent.should_audit_success():
+                if isinstance(agent, (NemotronAugmentedCodexAgent, NemotronAugmentedAPIAgent)) and agent.should_audit_success():
                     after_state = planning_state(runtime.engine)
                     actual_plan = {"calls": list(executed.calls or []), "note": str(plan.get("note") or "")}
                     verification = agent.audit_success(
@@ -652,7 +859,7 @@ def _execute_prompt_body(user_id: str, project_id: str, payload: PromptRequest, 
                                     executor=runtime.executor,
                                     agent=agent,
                                     user_prompt=agent_prompt,
-                                    state_provider=lambda: planning_state(runtime.engine),
+                                    state_provider=lambda: _planning_state_with_conversation(runtime.engine, history, pending),
                                     plan=repair_plan,
                                     on_event=on_event,
                                     initial_progress_span=(94, 97),
@@ -697,6 +904,8 @@ def _execute_prompt_body(user_id: str, project_id: str, payload: PromptRequest, 
             if on_event:
                 on_event("progress", {"message": "Saving project…", "percent": 99})
             runtime.persist()
+            if interaction_response is None:
+                _clear_pending_conversation(project_id)
 
         with db_session() as db:
             db.add(ChatMessage(project_id=project_id, role="user", content=prompt))
@@ -704,6 +913,8 @@ def _execute_prompt_body(user_id: str, project_id: str, payload: PromptRequest, 
         response = {"message": message, "state": runtime.state()}
         if verification_response:
             response["engineeringVerification"] = verification_response
+        if interaction_response:
+            response["interaction"] = interaction_response
         return response
     finally:
         with cancel_lock:
@@ -714,28 +925,52 @@ def _execute_prompt_body(user_id: str, project_id: str, payload: PromptRequest, 
 def execute_prompt_sync(user_id: str, project_id: str, payload: PromptRequest, on_event=None):
     key = (user_id, project_id)
     event = threading.Event()
+    token = f"prompt:{user_id}:{project_id}:{secrets.token_hex(8)}"
     with cancel_lock:
         if key in cancel_events:
-            raise RuntimeError("A modeling task is already running in this project.")
+            raise RuntimeError("A modeling task is already queued or running in this project.")
         cancel_events[key] = event
+    reserved = False
     acquired = False
     try:
-        acquired = ai_turn_slots.acquire(timeout=10)
+        try:
+            heavy_job_manager.reserve(token, user_id, project_id, "prompt", event)
+            reserved = True
+        except HeavyJobBusy as exc:
+            raise RuntimeError(str(exc)) from exc
+
+        # Flush and remove the long-lived in-process runtime before an isolated worker
+        # opens the same persisted project. CAD HTTP routes are locked while reserved.
+        runtime_manager.drop(user_id, project_id)
+
+        if on_event:
+            on_event("progress", {"message": "Queued for an isolated CAD worker…", "percent": 1})
+        acquired = heavy_job_manager.acquire(token)
         if not acquired:
-            raise RuntimeError("The server has reached its concurrent modeling limit. Please try again shortly.")
-
-        def guarded_event(kind, value):
-            if event.is_set():
-                raise RuntimeError("The modeling task was canceled by the user.")
-            if on_event:
-                on_event(kind, value)
-
+            raise RuntimeError("The modeling task was canceled before it started.")
         if event.is_set():
             raise RuntimeError("The modeling task was canceled by the user.")
-        return _execute_prompt_body(user_id, project_id, payload, guarded_event)
+
+        if on_event:
+            on_event("progress", {"message": "Starting isolated CAD worker…", "percent": 2})
+        result = run_isolated(
+            token=token,
+            kind="prompt",
+            payload={
+                "user_id": user_id,
+                "project_id": project_id,
+                "request": payload.model_dump(mode="json"),
+            },
+            cancel_event=event,
+            hard_timeout_seconds=PROMPT_JOB_HARD_TIMEOUT_SECONDS,
+            on_event=on_event,
+        )
+        return result
+    except Exception:
+        raise
     finally:
-        if acquired:
-            ai_turn_slots.release()
+        if reserved:
+            heavy_job_manager.finish(token)
         with cancel_lock:
             if cancel_events.get(key) is event:
                 cancel_events.pop(key, None)
@@ -748,6 +983,9 @@ def cancel_prompt(user_id: str, project_id: str) -> None:
         agent = active_agents.get(key)
         if event:
             event.set()
+    # The API process may now be waiting on an isolated worker rather than owning
+    # the CAD/AI agent directly. Cancel the reserved worker/process group as well.
+    heavy_job_manager.cancel_project(user_id, project_id, wait_timeout=0.0)
     if agent is not None:
         try:
             agent.cancel()
@@ -764,3 +1002,4 @@ async def prompt(project_id: str, payload: PromptRequest, user: CurrentUser, db:
         raise HTTPException(status_code=401, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+

@@ -18,6 +18,8 @@ from standalonecad.recovery import execute_with_failure_recovery
 
 from .cad_runtime import CadRuntime, runtime_manager
 from .config import settings
+from .heavy_jobs import HeavyJobBusy, heavy_job_manager
+from .isolated_execution import run_isolated
 from .photo_cad_external import (
     ExternalEngineResult,
     build_reference_mesh_from_agentic_evidence,
@@ -489,7 +491,13 @@ class PhotoCadJobManager:
     def __init__(self) -> None:
         self._lock = threading.RLock()
         self._jobs: dict[str, PhotoCadJob] = {}
+        self._futures: dict[str, Any] = {}
         self._pool = ThreadPoolExecutor(max_workers=PHOTO_WORKERS, thread_name_prefix="cadia-photo-cad")
+
+    def start(self) -> None:
+        with self._lock:
+            if getattr(self._pool, "_shutdown", False):
+                self._pool = ThreadPoolExecutor(max_workers=PHOTO_WORKERS, thread_name_prefix="cadia-photo-cad")
 
     def _state_path(self, job: PhotoCadJob) -> Path:
         return runtime_manager.project_root(job.user_id, job.project_id) / "photo_cad" / "jobs" / f"{job.id}.json"
@@ -507,26 +515,44 @@ class PhotoCadJobManager:
         except Exception:
             pass
 
+    def _token(self, job_id: str) -> str:
+        return f"photo:{job_id}"
+
     def create(self, job: PhotoCadJob) -> PhotoCadJob:
-        with self._lock:
-            if job.deadline_at is None:
-                job.deadline_at = time.time() + PHOTO_JOB_HARD_TIMEOUT_SECONDS
-            self._jobs[job.id] = job
-            self._persist(job)
-        future = self._pool.submit(self._run, job.id)
-        future.add_done_callback(lambda completed, jid=job.id: self._worker_done(jid, completed))
-        threading.Thread(target=self._watchdog, args=(job.id,), name=f"cadia-photo-watchdog-{job.id[:8]}", daemon=True).start()
-        return job
+        token = self._token(job.id)
+        heavy_job_manager.reserve(token, job.user_id, job.project_id, "photo-to-cad", job.cancel_event)
+        try:
+            runtime_manager.drop(job.user_id, job.project_id)
+            job.deadline_at = None
+            with self._lock:
+                self._jobs[job.id] = job
+                self._persist(job)
+            future = self._pool.submit(self._run, job.id)
+            with self._lock:
+                self._futures[job.id] = future
+            future.add_done_callback(lambda completed, jid=job.id: self._worker_done(jid, completed))
+            return job
+        except Exception:
+            heavy_job_manager.finish(token)
+            raise
 
     def _worker_done(self, job_id: str, future) -> None:
+        with self._lock:
+            self._futures.pop(job_id, None)
+            job = self._jobs.get(job_id)
+        if future.cancelled():
+            heavy_job_manager.finish(self._token(job_id))
+            if job is not None and job.status not in TERMINAL_STATUSES:
+                job.error = "Photo-to-CAD job was cancelled before it started."
+                self._update(job, status="cancelled", message="Cancelled")
+            return
         try:
             exc = future.exception()
         except BaseException as callback_exc:
             exc = callback_exc
         if exc is None:
             return
-        with self._lock:
-            job = self._jobs.get(job_id)
+        heavy_job_manager.finish(self._token(job_id))
         if job is None or job.status in TERMINAL_STATUSES:
             return
         job.error = f"Photo-to-CAD worker terminated unexpectedly: {exc}"
@@ -594,8 +620,39 @@ class PhotoCadJobManager:
         if job.status in TERMINAL_STATUSES:
             return job
         job.cancel_event.set()
-        self._update(job, status="cancelling", message="Cancelling…")
+        heavy_job_manager.cancel_token(self._token(job.id))
+        with self._lock:
+            future = self._futures.get(job.id)
+        if future is not None and future.cancel():
+            self._update(job, status="cancelled", message="Cancelled")
+        else:
+            self._update(job, status="cancelling", message="Cancelling…")
         return job
+
+    def forget_project(self, user_id: str, project_id: str) -> None:
+        with self._lock:
+            stale = [jid for jid, job in self._jobs.items() if job.user_id == str(user_id) and job.project_id == str(project_id)]
+            for jid in stale:
+                self._jobs.pop(jid, None)
+                self._futures.pop(jid, None)
+
+    def forget_user(self, user_id: str) -> None:
+        with self._lock:
+            stale = [jid for jid, job in self._jobs.items() if job.user_id == str(user_id)]
+            for jid in stale:
+                self._jobs.pop(jid, None)
+                self._futures.pop(jid, None)
+
+    def shutdown(self) -> None:
+        with self._lock:
+            jobs = [job for job in self._jobs.values() if job.status not in TERMINAL_STATUSES]
+            futures = list(self._futures.values())
+        for job in jobs:
+            job.cancel_event.set()
+            heavy_job_manager.cancel_token(self._token(job.id))
+        for future in futures:
+            future.cancel()
+        self._pool.shutdown(wait=True, cancel_futures=True)
 
     def _update(self, job: PhotoCadJob, *, status: str | None = None, progress: int | None = None, message: str | None = None) -> None:
         with self._lock:
@@ -624,12 +681,42 @@ class PhotoCadJobManager:
         with self._lock:
             job = self._jobs.get(job_id)
         if job is None:
+            heavy_job_manager.finish(self._token(job_id))
             return
+        token = self._token(job.id)
         try:
-            if selected_provider_name(job.user_id) != "codex":
-                raise RuntimeError("Photo → CAD currently requires the ChatGPT / Codex provider. Connect ChatGPT / Codex and try again.")
-            self._update(job, status="running", progress=3, message="Preparing product-photo reconstruction…")
-            job.result = self._reconstruct(job)
+            self._update(job, status="queued", progress=1, message="Waiting for an isolated CAD worker…")
+            if not heavy_job_manager.acquire(token):
+                raise InterruptedError("Photo-to-CAD job was cancelled before it started.")
+            job.deadline_at = time.time() + PHOTO_JOB_HARD_TIMEOUT_SECONDS
+            self._persist(job)
+            threading.Thread(target=self._watchdog, args=(job.id,), name=f"cadia-photo-watchdog-{job.id[:8]}", daemon=True).start()
+            self._update(job, status="running", progress=3, message="Starting isolated photo reconstruction…")
+
+            def relay(kind: str, value: Any) -> None:
+                self._check(job)
+                if kind == "progress":
+                    if isinstance(value, dict):
+                        message = str(value.get("message") or job.message)
+                        percent = value.get("percent")
+                        progress = int(percent) if isinstance(percent, (int, float)) else None
+                    else:
+                        message, progress = str(value), None
+                    self._update(job, progress=progress, message=message)
+
+            job.result = run_isolated(
+                token=token,
+                kind="photo",
+                payload={"job": {
+                    "id": job.id, "user_id": job.user_id, "project_id": job.project_id,
+                    "input_files": dict(job.input_files), "notes": job.notes,
+                    "dimension_hint": job.dimension_hint, "model": job.model,
+                    "effort": job.effort, "vision_mode": job.vision_mode,
+                }},
+                cancel_event=job.cancel_event,
+                hard_timeout_seconds=PHOTO_JOB_HARD_TIMEOUT_SECONDS,
+                on_event=relay,
+            )
             self._check(job)
             self._update(job, status="done", progress=100, message="Editable CAD reconstructed from photos")
         except TimeoutError as exc:
@@ -641,6 +728,8 @@ class PhotoCadJobManager:
         except Exception as exc:
             job.error = str(exc)
             self._update(job, status="failed", message="Photo reconstruction failed")
+        finally:
+            heavy_job_manager.finish(token)
 
     def _reconstruct(self, job: PhotoCadJob) -> dict[str, Any]:
         runtime = runtime_manager.get(job.user_id, job.project_id)
@@ -1807,4 +1896,4 @@ def clamp01(value: Any) -> float:
     return max(0.0, min(1.0, n))
 
 
-photo_cad_jobs = PhotoCadJobManager()
+photo_cad_jobs = None if os.getenv("CADIA_ISOLATED_WORKER") == "1" else PhotoCadJobManager()

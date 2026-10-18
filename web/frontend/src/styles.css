@@ -112,6 +112,18 @@ input, textarea, select { outline: none; }
 .create-card { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; border-style: dashed; color: #98a6b9; background: transparent; }
 .create-card small { color: #657285; }
 .create-icon { width: 48px; height: 48px; display: grid; place-items: center; color: #8298ea; background: #19213a; border-radius: 12px; margin-bottom: 8px; }
+.project-card-shell { position: relative; }
+.project-card-open { width: 100%; min-height: 248px; display: block; padding: 0; border: 0; background: transparent; color: inherit; text-align: left; }
+.project-delete-button { position: absolute; right: 13px; bottom: 13px; z-index: 2; width: 32px; height: 32px; display: grid; place-items: center; border-radius: 7px; border: 1px solid #343b46; background: rgba(20,25,32,.92); color: #7f8a99; opacity: .82; transition: color .15s, border-color .15s, background .15s, opacity .15s; }
+.project-delete-button:hover, .project-delete-button:focus-visible { color: #ff8f98; border-color: rgba(240,108,117,.5); background: rgba(82,29,35,.72); opacity: 1; }
+.project-delete-button .spinner { width: 14px; height: 14px; }
+.delete-project-modal { width: min(440px, 100%); }
+.delete-project-modal h2 { margin-bottom: 10px; }
+.delete-project-modal .muted { margin: 0 0 22px; font-size: 13px; }
+.delete-project-icon { width: 42px; height: 42px; display: grid; place-items: center; margin-bottom: 18px; border-radius: 10px; color: #ff8f98; background: rgba(240,108,117,.1); border: 1px solid rgba(240,108,117,.22); }
+.danger-action { height: 42px; padding: 0 17px; display: inline-flex; align-items: center; justify-content: center; gap: 8px; border-radius: 8px; border: 1px solid rgba(240,108,117,.42); background: rgba(151,48,59,.24); color: #ff9ba3; font-weight: 650; }
+.danger-action:hover { background: rgba(178,55,67,.34); border-color: rgba(240,108,117,.62); }
+.danger-action:disabled { cursor: not-allowed; opacity: .5; }
 
 /* modal */
 .modal-backdrop { position: fixed; z-index: 100; inset: 0; background: rgba(3,5,8,.72); backdrop-filter: blur(5px); display: grid; place-items: center; padding: 24px; }
@@ -239,7 +251,7 @@ input, textarea, select { outline: none; }
 .axis-origin .x { right: -1px; bottom: 12px; color: #e46262; }
 .axis-origin .y { left: 0; bottom: 8px; color: #5dbc7b; }
 
-.ai-panel { border-left: 1px solid var(--border); display: grid; grid-template-rows: 49px 39px minmax(0,1fr) auto auto 22px; }
+.ai-panel { border-left: 1px solid var(--border); display: grid; grid-template-rows: 49px auto minmax(0,1fr) auto auto 22px; }
 .ai-header { display: flex; align-items: center; justify-content: space-between; padding: 0 10px; border-bottom: 1px solid var(--border); }
 .ai-header > div { display: flex; gap: 8px; align-items: center; }
 .ai-glyph { width: 27px; height: 27px; display: grid; place-items: center; border-radius: 7px; color: #8da5ff; background: #1d2747; }
@@ -454,54 +466,35 @@ input, textarea, select { outline: none; }
   .visual-cad-actions button { flex: 1; }
 }
 
-/* CADia OpenCV 5 Vision lane */
-.vision-mode-switch { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 9px; padding: 16px 24px 2px; }
-.vision-mode-switch > button { min-width: 0; display: flex; align-items: center; gap: 10px; padding: 11px 12px; border: 1px solid #303a47; border-radius: 9px; background: #12171e; color: #8e9aab; text-align: left; cursor: pointer; }
-.vision-mode-switch > button:hover:not(:disabled) { border-color: #506171; background: #151c24; }
-.vision-mode-switch > button.active { border-color: #5e76c9; background: #19223a; color: #9db0f2; box-shadow: inset 0 0 0 1px rgba(94,118,201,.14); }
-.vision-mode-switch > button.opencv.active { border-color: #4c8e81; background: #142721; color: #8cd4c1; box-shadow: inset 0 0 0 1px rgba(76,142,129,.16); }
-.vision-mode-switch > button:disabled { opacity: .46; cursor: default; }
-.vision-mode-switch > button svg { flex: 0 0 auto; }
-.vision-mode-switch > button span { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
-.vision-mode-switch > button b { color: #d8e0eb; font-size: 10px; line-height: 1.2; }
-.vision-mode-switch > button small { color: #748194; font-size: 8px; line-height: 1.35; font-weight: 500; }
-.vision-mode-switch > button.opencv.active b { color: #d8f0e9; }
-.vision-mode-switch > button.opencv.active small { color: #84aa9f; }
-.opencv-result { margin-top: 10px; padding-top: 10px; border-top: 1px solid rgba(86,142,128,.30); }
-.opencv-result > div:first-child { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; }
-.opencv-result > div:first-child svg { color: #65bca6; }
-.opencv-result > div:first-child b { color: #d8eee8; font-size: 10px; }
-.opencv-result > div:first-child span { margin-left: auto; color: #87aca2; font-family: "IBM Plex Mono", monospace; font-size: 8px; }
-.opencv-result > small { display: block; margin-top: 7px; color: #86a399; font-size: 8px; line-height: 1.45; }
-.opencv-artifacts { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 7px; margin-top: 9px; }
-.opencv-artifacts figure { min-width: 0; margin: 0; overflow: hidden; border: 1px solid #31453f; border-radius: 7px; background: #0e1513; }
-.opencv-artifacts img { display: block; width: 100%; aspect-ratio: 16 / 10; object-fit: contain; background: #f4f5f5; }
-.opencv-artifacts figcaption { overflow: hidden; padding: 6px 7px; color: #7f9c94; font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
-@media (max-width: 640px) {
-  .vision-mode-switch { grid-template-columns: 1fr; }
-  .opencv-artifacts { grid-template-columns: 1fr; }
-  .opencv-result > div:first-child span { width: 100%; margin-left: 22px; }
+/* project multi-select / bulk delete */
+.dashboard-toolbar.selection-active { min-height: 48px; margin-bottom: 14px; padding: 8px 10px; border: 1px solid #303a49; border-radius: 10px; background: rgba(22,28,37,.78); }
+.project-toolbar-actions, .project-selection-toolbar { display: flex; align-items: center; gap: 9px; }
+.project-selection-toolbar { justify-content: flex-end; flex-wrap: wrap; }
+.selection-count { min-width: 76px; color: #93a0b2; }
+.selection-count strong { color: #e7edf6; }
+.compact-action { min-height: 34px; height: 34px; padding: 0 12px; font-size: 12px; }
+.selection-cancel { width: 34px; height: 34px; }
+.project-card-selected { border-color: #6685ef; box-shadow: 0 0 0 1px rgba(102,133,239,.36), 0 16px 42px rgba(0,0,0,.25); }
+.project-card-selected:hover { border-color: #7692f2; box-shadow: 0 0 0 1px rgba(118,146,242,.48), 0 18px 45px rgba(0,0,0,.28); }
+.project-select-button { position: absolute; z-index: 3; top: 13px; left: 13px; width: 30px; height: 30px; display: grid; place-items: center; border-radius: 8px; border: 1px solid #485362; background: rgba(13,17,22,.88); color: white; box-shadow: 0 4px 14px rgba(0,0,0,.22); transition: border-color .15s, background .15s, transform .15s; }
+.project-select-button:hover { transform: scale(1.04); border-color: #7087c8; }
+.project-select-button.selected { border-color: #7390f2; background: #5572d2; }
+.project-select-button:disabled { cursor: wait; opacity: .65; }
+.bulk-delete-progress { margin: 2px 0 17px; padding: 11px 12px; display: flex; align-items: center; gap: 9px; border: 1px solid #313a46; border-radius: 8px; background: #12171d; color: #aab5c4; font-size: 12px; }
+@media (max-width: 760px) {
+  .dashboard-toolbar, .dashboard-toolbar.selection-active { align-items: stretch; gap: 10px; flex-direction: column; }
+  .search-box { width: 100%; }
+  .project-toolbar-actions, .project-selection-toolbar { justify-content: flex-start; }
 }
 
 
-/* CADia OpenCV 5 top-level launcher */
-.tool-group button.opencv-toolbar-button { position: relative; border-color: rgba(76,142,129,.52); background: linear-gradient(180deg,rgba(29,73,63,.42),rgba(18,41,36,.36)); color: #94d5c4; }
-.tool-group button.opencv-toolbar-button:hover { border-color: #5ba792; background: linear-gradient(180deg,rgba(36,91,78,.58),rgba(21,54,46,.48)); color: #d8f4ec; }
-.tool-group button.opencv-toolbar-button > i { min-width: 14px; height: 14px; padding: 0 4px; display: inline-flex; align-items: center; justify-content: center; border-radius: 999px; background: #3b816f; color: #e9fff9; font: 700 8px/1 "IBM Plex Mono", monospace; font-style: normal; }
-.opencv-launcher-modal { width: min(720px,94vw); }
-.opencv-launcher-icon { color: #7ed8c1; background: #17332c; }
-.opencv-launcher-status { margin: 16px 24px 0; padding: 10px 12px; display: flex; align-items: center; justify-content: space-between; gap: 12px; border: 1px solid rgba(77,148,130,.38); border-radius: 8px; background: rgba(19,45,38,.52); }
-.opencv-launcher-status span { display: inline-flex; align-items: center; gap: 7px; color: #a9decf; font: 700 9px/1.2 "IBM Plex Mono", monospace; text-transform: uppercase; letter-spacing: .04em; }
-.opencv-launcher-status span i { width: 7px; height: 7px; border-radius: 50%; background: #69d6b8; box-shadow: 0 0 0 4px rgba(105,214,184,.10); }
-.opencv-launcher-status small { color: #75968d; font-size: 9px; }
-.opencv-launcher-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 12px; padding: 16px 24px 8px; }
-.opencv-launcher-grid > button { min-width: 0; min-height: 190px; padding: 20px; display: flex; flex-direction: column; align-items: flex-start; gap: 9px; border: 1px solid #315247; border-radius: 11px; background: linear-gradient(145deg,#121b18,#151d23); color: inherit; text-align: left; cursor: pointer; }
-.opencv-launcher-grid > button:hover { border-color: #5ca891; transform: translateY(-1px); box-shadow: 0 14px 34px rgba(0,0,0,.18); }
-.opencv-launcher-card-icon { width: 42px; height: 42px; display: grid; place-items: center; border-radius: 9px; background: #19352d; color: #79d2ba; }
-.opencv-launcher-grid strong { color: #e0f2ed; font-size: 13px; }
-.opencv-launcher-grid small { color: #809b94; font-size: 9px; line-height: 1.55; }
-.opencv-launcher-grid em { margin-top: auto; color: #72c6ae; font: 700 8px/1.2 "IBM Plex Mono", monospace; font-style: normal; letter-spacing: .06em; }
-.opencv-launcher-flow { margin: 10px 24px 22px; padding: 12px; display: flex; align-items: center; justify-content: center; gap: 9px; border-top: 1px solid rgba(74,122,110,.25); color: #66877e; }
-.opencv-launcher-flow span { color: #8ab9ac; font: 700 8px/1 "IBM Plex Mono", monospace; letter-spacing: .07em; }
-.opencv-launcher-flow b { color: #3e685d; font-size: 10px; }
-@media (max-width: 720px) { .opencv-launcher-grid { grid-template-columns: 1fr; } .opencv-launcher-status { align-items: flex-start; flex-direction: column; } }
+
+
+/* CADIA_FREE_PLAN_AI_V101 */
+.free-model-controls{border-bottom:0;padding-top:4px}
+
+/* CADIA_CONVERSATIONAL_UI_V1 */
+.clarify-replies{display:flex;flex-wrap:wrap;gap:7px;padding:8px 10px 0}
+.clarify-replies button{border:1px solid var(--border,#303846);background:var(--panel,#151a21);color:inherit;border-radius:9px;padding:7px 10px;font-size:12px;cursor:pointer;text-align:left}
+.clarify-replies button:hover:not(:disabled){border-color:currentColor}
+.clarify-replies button:disabled{opacity:.55;cursor:not-allowed}

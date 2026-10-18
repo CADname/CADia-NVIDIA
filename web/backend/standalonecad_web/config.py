@@ -29,6 +29,9 @@ class Settings:
     codex_process_idle_seconds: int
     max_codex_processes: int
     max_concurrent_ai_turns: int
+    heavy_cad_workers: int
+    heavy_queue_timeout_seconds: int
+    heavy_cancel_grace_seconds: float
     engine_idle_seconds: int
     max_upload_bytes: int
     mesh_tolerance: float
@@ -82,6 +85,9 @@ class Settings:
             codex_process_idle_seconds=int(os.getenv("CODEX_PROCESS_IDLE_SECONDS", "1800")),
             max_codex_processes=max(1, int(os.getenv("NEXIS_MAX_CODEX_PROCESSES", "24"))),
             max_concurrent_ai_turns=max(1, int(os.getenv("NEXIS_MAX_CONCURRENT_AI_TURNS", "4"))),
+            heavy_cad_workers=max(1, int(os.getenv("CADIA_HEAVY_CAD_WORKERS", "2"))),
+            heavy_queue_timeout_seconds=max(60, int(os.getenv("CADIA_HEAVY_QUEUE_TIMEOUT_SECONDS", "7200"))),
+            heavy_cancel_grace_seconds=max(1.0, float(os.getenv("CADIA_HEAVY_CANCEL_GRACE_SECONDS", "8"))),
             engine_idle_seconds=int(os.getenv("CAD_ENGINE_IDLE_SECONDS", "1800")),
             max_upload_bytes=int(os.getenv("NEXIS_MAX_UPLOAD_BYTES", str(100 * 1024 * 1024))),
             mesh_tolerance=float(os.getenv("NEXIS_MESH_TOLERANCE", "0.08")),

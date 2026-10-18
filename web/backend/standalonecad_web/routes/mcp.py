@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 from ..auth import CurrentUser
 from ..cad_runtime import runtime_manager
 from ..database import get_db
+from ..heavy_jobs import heavy_job_manager
 from ..mcp_gateway import ProjectMcpGateway
 from ..models import McpAccessToken
 from ..schemas import McpTokenCreate
@@ -60,6 +61,7 @@ def create_token(project_id: str, payload: McpTokenCreate, request: Request, use
         "token": token,
         "server": base,
         "rpcUrl": f"{base}/api/mcp/projects/{project_id}",
+        "remoteRpcUrl": f"{base}/api/mcp",
         "bridgeDownload": f"{base}/api/mcp/bridge.py",
         "warning": "This token will not be shown again. Remote use is recommended only over HTTPS.",
     }
@@ -117,6 +119,11 @@ def mcp_rpc(
 ):
     row = _token_row(project_id, authorization, db)
     owned_project(db, row.owner_id, project_id)
+    if heavy_job_manager.project_reserved(row.owner_id, project_id) and ProjectMcpGateway.request_mutates(request_payload):
+        raise HTTPException(
+            status_code=423,
+            detail="This project is currently being modeled by an isolated CAD worker. Wait for the job to finish or cancel it first.",
+        )
     runtime = runtime_manager.get(row.owner_id, project_id)
     response = ProjectMcpGateway(runtime).dispatch(request_payload)
     if response is None:

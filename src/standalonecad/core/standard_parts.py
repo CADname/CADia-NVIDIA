@@ -6,6 +6,9 @@ from typing import Any
 
 import cadquery as cq
 
+# CADIA_GENERAL_THREAD_DEFINITION_V1
+from .threading import ThreadApplication, ThreadDefinition, build_modeled_thread
+
 
 # ISO metric coarse pitch defaults (mm). Values are standard coarse-series defaults
 # commonly used by ISO 261/262 fasteners. Explicit user pitch always wins.
@@ -71,8 +74,7 @@ def _hex_prism(across_flats: float, height: float, z0: float = 0.0) -> cq.Shape:
 
 
 def _thread_depth_iso60(pitch: float) -> float:
-    # Practical radial depth for a 60° ISO metric external thread. This intentionally
-    # models a truncated V thread rather than a razor-sharp theoretical fundamental triangle.
+    # Backward-compatible helper retained for callers that import it directly.
     return 0.61343 * float(pitch)
 
 
@@ -83,55 +85,15 @@ def external_metric_thread(
     z0: float = 0.0,
     right_handed: bool = True,
     crest_flat_fraction: float = 0.125,
-) -> tuple[cq.Shape, dict[str, float]]:
-    """Generate a real helical external 60° metric thread as B-Rep geometry.
-
-    The returned solid includes the root cylinder plus a swept truncated-V ridge.
-    It is deterministic and independent of a proprietary CAD host.
-    """
-    d = float(major_diameter); p = float(pitch); L = float(length)
-    if d <= 0 or p <= 0 or L <= 0:
-        raise ValueError("major_diameter, pitch and length must be > 0")
-    depth = min(_thread_depth_iso60(p), d * 0.22)
-    r_major = d / 2.0
-    r_minor = max(0.05, r_major - depth)
-    radial_overlap = min(0.08, max(0.01, depth * 0.08))
-    axial_overlap = min(0.10, max(0.02, p * 0.05)) if z0 > 0 else 0.0
-    root = cq.Solid.makeCylinder(r_minor + radial_overlap/2.0, L + axial_overlap, (0, 0, z0-axial_overlap), (0, 0, 1))
-
-    # Start the helix at the minor-radius surface. A trapezoidal section avoids a
-    # zero-area/knife-edge crest and is more robust under booleans than a pure triangle.
-    crest = max(0.02 * p, min(0.35 * p, float(crest_flat_fraction) * p))
-    half_root = min(0.45 * p, p * 0.36)
-    half_crest = crest / 2.0
-    plane = cq.Workplane("XZ", origin=(0, 0, z0)).center(r_minor, 0)
-    profile = (
-        plane.polyline([
-            (-radial_overlap, -half_root),
-            (depth, -half_crest),
-            (depth, half_crest),
-            (-radial_overlap, half_root),
-        ]).close().wire().val()
+) -> tuple[cq.Shape, dict[str, Any]]:
+    """Generate a modeled ISO metric external thread from a shared ThreadDefinition."""
+    definition = ThreadDefinition.iso_metric(
+        major_diameter,
+        pitch,
+        right_handed,
+        crest_flat_fraction=crest_flat_fraction,
     )
-    helix = cq.Wire.makeHelix(p, L, r_minor, center=(0, 0, z0), dir=(0, 0, 1), lefthand=not right_handed)
-    ridge = cq.Solid.sweep(profile, [], helix, makeSolid=True, isFrenet=True)
-    # Clip the run-out created by the finite profile so modeled thread length remains exact.
-    clip = cq.Solid.makeCylinder(r_major + 0.1, L, (0, 0, z0), (0, 0, 1))
-    ridge = cq.Workplane(obj=ridge).intersect(clip).val()
-    try:
-        candidate = cq.Workplane(obj=root).union(ridge).val()
-        if not candidate.Solids():
-            raise ValueError('empty thread union')
-        shape = candidate
-    except Exception:
-        shape = cq.Compound.makeCompound([root, ridge])
-    return shape, {
-        "major_diameter_mm": d,
-        "minor_diameter_mm": 2 * r_minor,
-        "pitch_mm": p,
-        "thread_length_mm": L,
-        "thread_depth_mm": depth,
-    }
+    return build_modeled_thread(ThreadApplication(definition, internal=False, length_mm=length, z0_mm=z0))
 
 
 def internal_metric_thread_cut(
@@ -140,42 +102,10 @@ def internal_metric_thread_cut(
     length: float,
     z0: float = 0.0,
     right_handed: bool = True,
-) -> tuple[cq.Shape, dict[str, float]]:
-    """Return a cutting tool for a real helical internal 60° thread."""
-    d = float(major_diameter); p = float(pitch); L = float(length)
-    if d <= 0 or p <= 0 or L <= 0:
-        raise ValueError("major_diameter, pitch and length must be > 0")
-    # Basic-profile internal minor diameter approximation D1 = D - 1.08253 P.
-    r_major = d / 2.0
-    r_minor = max(0.05, (d - 1.08253 * p) / 2.0)
-    depth = r_major - r_minor
-    radial_overlap = min(0.08, max(0.01, depth * 0.08))
-    core = cq.Solid.makeCylinder(r_minor, L, (0, 0, z0), (0, 0, 1))
-    half_root = min(0.45 * p, p * 0.36)
-    half_crest = max(0.02 * p, p * 0.0625)
-    profile = (
-        cq.Workplane("XZ", origin=(0, 0, z0)).center(r_minor, 0)
-        .polyline([(-radial_overlap, -half_root), (depth, -half_crest), (depth, half_crest), (-radial_overlap, half_root)])
-        .close().wire().val()
-    )
-    helix = cq.Wire.makeHelix(p, L, r_minor, center=(0, 0, z0), dir=(0, 0, 1), lefthand=not right_handed)
-    groove = cq.Solid.sweep(profile, [], helix, makeSolid=True, isFrenet=True)
-    # The helical profile overlaps the core cylinder slightly so OCC can fuse both
-    # into one connected cutter. Without this tiny overlap, tangent-only geometry can
-    # make the helical flank disappear from a boolean cut on some kernels.
-    try:
-        cutter = cq.Workplane(obj=core).union(groove).val()
-        if not cutter.Solids() or cutter.Volume() <= core.Volume() + 1e-6:
-            raise ValueError("thread cutter fusion failed")
-    except Exception:
-        cutter = cq.Compound.makeCompound([core, groove])
-    return cutter, {
-        "major_diameter_mm": d,
-        "minor_diameter_mm": 2 * r_minor,
-        "pitch_mm": p,
-        "thread_length_mm": L,
-        "thread_depth_mm": depth,
-    }
+) -> tuple[cq.Shape, dict[str, Any]]:
+    """Return a modeled ISO metric internal-thread cutter from the same definition layer."""
+    definition = ThreadDefinition.iso_metric(major_diameter, pitch, right_handed)
+    return build_modeled_thread(ThreadApplication(definition, internal=True, length_mm=length, z0_mm=z0))
 
 
 def metric_hex_bolt(

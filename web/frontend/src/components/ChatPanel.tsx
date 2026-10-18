@@ -4,6 +4,7 @@ import type { AccountInfo, ChatMessage, ModelInfo } from '../types'
 
 type Props = {
   messages: ChatMessage[]
+  quickReplies: string[]
   busy: boolean
   progress: { message: string; percent: number } | null
   account: AccountInfo | null
@@ -25,7 +26,8 @@ const examples = [
 ]
 
 export default function ChatPanel(props: Props) {
-  const { messages, busy, progress, account, models, selectedModel, selectedEffort, onModel, onEffort, onConnect, onSend, onCancel } = props
+  const { messages, quickReplies, busy, progress, account, models, selectedModel, selectedEffort, onModel, onEffort, onConnect, onSend, onCancel } = props
+  const providerLabel = account?.providerLabel || account?.account?.planType || 'AI'
   const [prompt, setPrompt] = useState('')
   const endRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
@@ -61,7 +63,7 @@ export default function ChatPanel(props: Props) {
 
   return (
     <aside className="ai-panel">
-      <div className="ai-header"><div><span className="ai-glyph"><Sparkles size={16} /></span><div><strong>CAD AI</strong><small>{account?.connected || account?.account ? `${account?.providerLabel || account?.account?.planType || 'AI'} connected` : 'AI not connected'}</small></div></div><button className={`connection-dot ${account?.connected || account?.account ? 'online' : ''}`} title="Connect AI" onClick={onConnect}><Link2 size={16} /></button></div>
+      <div className="ai-header"><div><span className="ai-glyph"><Sparkles size={16} /></span><div><strong>CAD AI</strong><small>{account?.connected || account?.account ? `${providerLabel} connected` : 'AI not connected'}</small></div></div><button className={`connection-dot ${account?.connected || account?.account ? 'online' : ''}`} title="Connect AI" onClick={onConnect}><Link2 size={16} /></button></div>
       <div className="model-controls">
         <select value={selectedModel} onChange={(event) => onModel(event.target.value)} disabled={!models.length}>{models.length ? models.map((model) => <option key={model.id} value={model.model || model.id}>{model.displayName || model.model || model.id}</option>) : <option>Auto-select model</option>}</select>
         {account?.supportsReasoning !== false && <select value={effortOptions.includes(selectedEffort) ? selectedEffort : effortOptions[0]} onChange={(event) => onEffort(event.target.value)}>{effortOptions.map((value) => <option value={value} key={value}>{effortLabel(value)}</option>)}</select>}
@@ -73,6 +75,7 @@ export default function ChatPanel(props: Props) {
         <div ref={endRef} />
       </div>
       {!(account?.connected || account?.account) && <button className="connect-strip" onClick={onConnect}><Link2 size={16} /><span><strong>Connect AI</strong><small>ChatGPT/Codex · GitHub Copilot · Claude · Gemini · OpenAI API</small></span></button>}
+      {quickReplies.length > 0 && <div className="clarify-replies" aria-label="Clarification options">{quickReplies.map((value, index) => <button key={`${index}-${value}`} disabled={busy} onClick={() => onSend(value)}>{value}</button>)}</div>}
       <div className="prompt-box">
         <textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} onKeyDown={keyDown} placeholder="Example: Make the selected cylindrical face 24 mm in diameter" rows={3} disabled={busy} />
         <div className="prompt-footer"><span><CornerDownLeft size={13} /> Enter to send · Shift+Enter for a new line</span>{busy ? <button className="stop-button" onClick={onCancel}><CircleStop size={18} /></button> : <button className="send-button" onClick={submit} disabled={!prompt.trim()}><Send size={18} /></button>}</div>
@@ -81,3 +84,4 @@ export default function ChatPanel(props: Props) {
     </aside>
   )
 }
+

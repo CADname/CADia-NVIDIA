@@ -20,7 +20,7 @@ import numpy as np
 
 from .assembly import Occurrence, find_interface, transformed_frame, transform_shape
 from .joints import _intent_local_frame, _transform_local_frame
-from .topology import make_face_ref
+from .topology import make_face_ref, match_face, match_edge, face_frame
 
 
 def _encode_key(payload: dict[str, Any]) -> str:
@@ -74,6 +74,36 @@ class GeometryProxy:
 
     def world_frame(self) -> dict[str, Any]:
         occ = self.occurrence._native
+        if isinstance(self.entity, dict) and self.entity.get("proxy_kind") == "topology":
+            topology_type = str(self.entity.get("topology_type") or "").lower()
+            native_ref = self.entity.get("native_ref")
+            doc = self.occurrence.parent.document
+            local_shape = occ.display_shape or doc._assembly_occurrence_shape(self.occurrence.name) or occ.shape
+            if local_shape is None:
+                raise ValueError(f"Occurrence has no geometry: {self.occurrence.name}")
+            if topology_type == "face":
+                native = match_face(local_shape, native_ref)
+            elif topology_type == "edge":
+                native = match_edge(local_shape, native_ref)
+            else:
+                raise ValueError(f"Unsupported topology proxy type: {topology_type}")
+            world = transform_shape(native, occ.position_mm, occ.rotation_deg_xyz)
+            c = world.Center()
+            if topology_type == "face":
+                fr = face_frame(world)
+                return {"origin": [float(v) for v in fr["origin"]], "direction": [float(v) for v in fr["direction"]], "x_direction": None}
+            direction = None
+            try:
+                verts = world.Vertices()
+                if str(world.geomType()) == "LINE" and len(verts) >= 2:
+                    a = np.asarray([verts[0].Center().x, verts[0].Center().y, verts[0].Center().z], float)
+                    b = np.asarray([verts[-1].Center().x, verts[-1].Center().y, verts[-1].Center().z], float)
+                    vec = b-a
+                    if float(np.linalg.norm(vec)) > 1e-12:
+                        direction = [float(v) for v in vec/np.linalg.norm(vec)]
+            except Exception:
+                direction = None
+            return {"origin": [float(c.x), float(c.y), float(c.z)], "direction": direction, "x_direction": None}
         if isinstance(self.entity, str):
             item = find_interface(occ.interfaces, self.entity)
             p, d = transformed_frame(item.get("origin", [0, 0, 0]), item.get("direction"), occ)
@@ -392,6 +422,32 @@ class ReferenceManager:
         # Resolve once now so invalid references fail at object creation instead of much later.
         proxy.world_frame()
         return proxy
+
+    def create_geometry_proxy_from_selection(self, selection: dict[str, Any]) -> GeometryProxy:
+        """Resolve one viewport topology selection into an occurrence-local proxy.
+
+        This mirrors Inventor ComponentOccurrence.CreateGeometryProxy: the selected
+        assembly entity keeps its occurrence context while the native topology reference
+        is stored in the component's local coordinate system.  No modeling-feature name
+        participates in this conversion.
+        """
+        if not isinstance(selection, dict):
+            raise TypeError("selection must be a dict")
+        topology_type = str(selection.get("type") or "").lower()
+        occurrence_name = str(selection.get("occurrence_name") or "")
+        if topology_type not in {"face", "edge"}:
+            raise ValueError("Topology proxy selection must be face or edge")
+        key = "face_ref" if topology_type == "face" else "edge_ref"
+        assembly_ref = selection.get(key)
+        if not occurrence_name or assembly_ref is None:
+            raise ValueError("Assembly topology selection requires occurrence_name and topology reference")
+        occurrence = self.document.component_definition.occurrences.item(occurrence_name)
+        native_ref = self.document._assembly_topology_ref_to_local(occurrence_name, topology_type, assembly_ref)
+        return self.create_geometry_proxy(occurrence, {
+            "proxy_kind": "topology",
+            "topology_type": topology_type,
+            "native_ref": copy.deepcopy(native_ref),
+        })
 
     def get_reference_key(self, obj: ComponentOccurrence | GeometryProxy) -> str:
         if isinstance(obj, ComponentOccurrence):

@@ -65,7 +65,7 @@ function AssetModel({ asset, selected, transparent, onSelect }: { asset: Asset3D
     })
   }, [object])
 
-  return <group scale={asset.display_scale || 1} onPointerDown={(event) => { event.stopPropagation(); onSelect() }}><primitive object={object} /></group>
+  return <group scale={asset.display_scale || 1} onClick={(event) => { if (event.delta > 5) return; event.stopPropagation(); onSelect() }}><primitive object={object} /></group>
 }
 
 function occurrenceColor(name?: string | null): string {
@@ -94,8 +94,8 @@ const Face = memo(function Face({ face, selected, selectionMode, transparent, cl
   }, [face.indices, face.positions])
   useEffect(() => () => geometry.dispose(), [geometry])
 
-  const click = (event: ThreeEvent<PointerEvent>) => {
-    if (selectionMode === 'edge') return
+  const click = (event: ThreeEvent<MouseEvent>) => {
+    if (selectionMode === 'edge' || event.delta > 5) return
     event.stopPropagation()
     if (selectionMode === 'object') {
       if (face.occurrence_name) {
@@ -112,7 +112,7 @@ const Face = memo(function Face({ face, selected, selectionMode, transparent, cl
   }
 
   return (
-    <mesh geometry={geometry} onPointerDown={click}>
+    <mesh geometry={geometry} onClick={click}>
       <meshStandardMaterial
         color={selected ? '#5b8cff' : occurrenceColor(face.occurrence_name)}
         emissive={selected ? '#173f97' : '#000000'}
@@ -276,8 +276,24 @@ function EdgeScreenPicker({ mesh, enabled, onSelect, onHover }: {
 
     const edgeKey = (edge: EdgeMesh) => `${edge.occurrence_name || ''}::${edge.id}`
 
+    let press: { x: number; y: number; additive: boolean } | null = null
+
     const handleDown = (event: PointerEvent) => {
       if (event.button !== 0) return
+      press = {
+        x: event.clientX,
+        y: event.clientY,
+        additive: event.ctrlKey || event.shiftKey || event.metaKey,
+      }
+      // Do not select/clear on pointerdown. OrbitControls must be able to turn a
+      // press into a camera drag without changing the current CAD selection.
+    }
+
+    const handleUp = (event: PointerEvent) => {
+      if (event.button !== 0 || !press) return
+      const start = press
+      press = null
+      if (Math.hypot(event.clientX - start.x, event.clientY - start.y) > 5) return
       const hit = pick(event)
       if (!hit) {
         onSelect({})
@@ -285,12 +301,12 @@ function EdgeScreenPicker({ mesh, enabled, onSelect, onHover }: {
       }
       onSelect(
         { type: 'edge', edge_ref: hit.edge.id, occurrence_name: hit.edge.occurrence_name || undefined, pick_point: hit.pickPoint },
-        event.ctrlKey || event.shiftKey || event.metaKey,
+        start.additive,
       )
       onHover(edgeKey(hit.edge))
-      // Deliberately do not stop propagation: the desktop picker performs the
-      // selection and still forwards the same press to the trackball camera.
     }
+
+    const handleCancel = () => { press = null }
 
     const flushHover = () => {
       rafRef.current = null
@@ -309,15 +325,56 @@ function EdgeScreenPicker({ mesh, enabled, onSelect, onHover }: {
     const handleLeave = () => onHover(null)
 
     canvas.addEventListener('pointerdown', handleDown, true)
+    canvas.addEventListener('pointerup', handleUp, true)
+    canvas.addEventListener('pointercancel', handleCancel, true)
     canvas.addEventListener('pointermove', handleMove, true)
     canvas.addEventListener('pointerleave', handleLeave, true)
     return () => {
       canvas.removeEventListener('pointerdown', handleDown, true)
+      canvas.removeEventListener('pointerup', handleUp, true)
+      canvas.removeEventListener('pointercancel', handleCancel, true)
       canvas.removeEventListener('pointermove', handleMove, true)
       canvas.removeEventListener('pointerleave', handleLeave, true)
       if (rafRef.current !== null) window.cancelAnimationFrame(rafRef.current)
     }
   }, [camera, enabled, gl, mesh, onHover, onSelect])
+
+  return null
+}
+
+function ViewportGestureTracker({ draggedRef }: { draggedRef: { current: boolean } }) {
+  const { gl } = useThree()
+
+  useEffect(() => {
+    const canvas = gl.domElement
+    let press: { x: number; y: number } | null = null
+
+    const down = (event: PointerEvent) => {
+      if (event.button !== 0) return
+      press = { x: event.clientX, y: event.clientY }
+      draggedRef.current = false
+    }
+    const move = (event: PointerEvent) => {
+      if (!press) return
+      if (Math.hypot(event.clientX - press.x, event.clientY - press.y) > 5) draggedRef.current = true
+    }
+    const finish = () => {
+      press = null
+      // Keep the flag through the click/onPointerMissed dispatch, then reset.
+      window.setTimeout(() => { draggedRef.current = false }, 0)
+    }
+
+    canvas.addEventListener('pointerdown', down, true)
+    canvas.addEventListener('pointermove', move, true)
+    canvas.addEventListener('pointerup', finish, true)
+    canvas.addEventListener('pointercancel', finish, true)
+    return () => {
+      canvas.removeEventListener('pointerdown', down, true)
+      canvas.removeEventListener('pointermove', move, true)
+      canvas.removeEventListener('pointerup', finish, true)
+      canvas.removeEventListener('pointercancel', finish, true)
+    }
+  }, [draggedRef, gl])
 
   return null
 }
@@ -380,6 +437,7 @@ function CameraController({ mesh, orientation }: { mesh: CadMesh | null; orienta
 export default function CadViewer(props: Props) {
   const { mesh, selection, selectionMode, showEdges, showGrid, transparent, sectionAxis, sectionOffset, orientation, theme, onSelect, assets, selectedAssetId, onSelectAsset } = props
   const [hoveredEdge, setHoveredEdge] = useState<string | null>(null)
+  const viewportDraggedRef = useRef(false)
 
   const clipPlane = useMemo(() => {
     if (sectionAxis === 'off' || !mesh?.bounds) return null
@@ -398,7 +456,7 @@ export default function CadViewer(props: Props) {
         dpr={[1, 2]}
         gl={{ antialias: true, alpha: false, powerPreference: 'high-performance', preserveDrawingBuffer: true }}
         onCreated={({ gl }) => { gl.localClippingEnabled = true }}
-        onPointerMissed={() => { if (selectionMode !== 'edge') { onSelect({}); onSelectAsset(null) } }}
+        onPointerMissed={() => { if (!viewportDraggedRef.current && selectionMode !== 'edge') { onSelect({}); onSelectAsset(null) } }}
       >
         <color attach="background" args={[theme === 'dark' ? '#0c0f14' : '#edf1f6']} />
         <ambientLight intensity={theme === 'dark' ? 1.5 : 1.7} />
@@ -415,6 +473,7 @@ export default function CadViewer(props: Props) {
         </group>
         <Suspense fallback={null}>{assets.map((asset) => <AssetModel key={asset.id} asset={asset} selected={selectedAssetId === asset.id} transparent={transparent} onSelect={() => onSelectAsset(asset.id)} />)}</Suspense>
         <EdgeScreenPicker mesh={mesh} enabled={selectionMode === 'edge'} onSelect={onSelect} onHover={setHoveredEdge} />
+        <ViewportGestureTracker draggedRef={viewportDraggedRef} />
         <CameraController mesh={mesh} orientation={orientation} />
         <GizmoHelper alignment="bottom-right" margin={[76, 72]}><GizmoViewport axisColors={['#f06464', '#57b77d', '#5b8cff']} labelColor={theme === 'dark' ? 'white' : '#17202d'} /></GizmoHelper>
       </Canvas>

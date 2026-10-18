@@ -12,16 +12,23 @@ from ..auth import CurrentUser
 from ..cad_runtime import _safe_name, runtime_manager
 from ..config import settings
 from ..database import get_db
+from ..heavy_jobs import heavy_job_manager
 from ..schemas import CommandRequest, SelectionRequest
 from .projects import owned_project
 
 
 router = APIRouter(prefix="/projects/{project_id}/cad", tags=["cad"])
 ALLOWED_IMPORTS = {".step", ".stp", ".brep", ".brp", ".json"}
+VIEW_ONLY_COMMANDS = {"view_fit", "set_view_orientation"}
 
 
-def runtime_for(project_id: str, user, db: Session):
+def runtime_for(project_id: str, user, db: Session, *, allow_reserved: bool = False):
     owned_project(db, user.id, project_id)
+    if not allow_reserved and heavy_job_manager.project_reserved(user.id, project_id):
+        raise HTTPException(
+            status_code=423,
+            detail="This project is currently being modeled by an isolated CAD worker. Wait for the job to finish or cancel it first.",
+        )
     try:
         return runtime_manager.get(user.id, project_id)
     except Exception as exc:
@@ -30,19 +37,22 @@ def runtime_for(project_id: str, user, db: Session):
 
 @router.get("/state")
 def get_state(project_id: str, user: CurrentUser, db: Session = Depends(get_db)):
-    return runtime_for(project_id, user, db).state()
+    return runtime_for(project_id, user, db, allow_reserved=True).state()
 
 
 @router.get("/mesh")
 def get_mesh(project_id: str, user: CurrentUser, db: Session = Depends(get_db), edges: bool = Query(True)):
-    return runtime_for(project_id, user, db).mesh(include_edges=edges)
+    return runtime_for(project_id, user, db, allow_reserved=True).mesh(include_edges=edges)
 
 
 @router.post("/select")
 def select_geometry(project_id: str, payload: SelectionRequest, user: CurrentUser, db: Session = Depends(get_db)):
-    runtime = runtime_for(project_id, user, db)
+    reserved = heavy_job_manager.project_reserved(user.id, project_id)
+    runtime = runtime_for(project_id, user, db, allow_reserved=True)
     try:
-        selection = runtime.select(payload.model_dump(exclude_none=True))
+        # Selection is UI state. While an isolated worker owns the model, keep it
+        # in-memory only so a click cannot overwrite the worker's project snapshot.
+        selection = runtime.select(payload.model_dump(exclude_none=True), persist=not reserved)
         return {"selection": selection, "state": runtime.state()}
     except Exception as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -50,9 +60,13 @@ def select_geometry(project_id: str, payload: SelectionRequest, user: CurrentUse
 
 @router.post("/command")
 def run_command(project_id: str, payload: CommandRequest, user: CurrentUser, db: Session = Depends(get_db)):
-    runtime = runtime_for(project_id, user, db)
+    view_only = payload.command in VIEW_ONLY_COMMANDS
+    reserved = view_only and heavy_job_manager.project_reserved(user.id, project_id)
+    runtime = runtime_for(project_id, user, db, allow_reserved=view_only)
     try:
-        result = runtime.command(payload.command, payload.arguments)
+        # Camera/view commands may run during isolated modeling but must not persist
+        # the stale main-process workspace while the worker owns project storage.
+        result = runtime.command(payload.command, payload.arguments, persist=not reserved)
         return {"result": result, "state": runtime.state()}
     except Exception as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc

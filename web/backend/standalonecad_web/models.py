@@ -49,6 +49,19 @@ class ChatMessage(Base):
     project: Mapped[Project] = relationship(back_populates="messages")
 
 
+# CADIA_TALKCAD_CONVERSATION_STATE_V1
+class ConversationState(Base):
+    """Durable per-project waiting-user state, adapted from TalkCAD's pendingUserQuestion pattern."""
+    __tablename__ = "cadia_conversation_states"
+
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), primary_key=True)
+    status: Mapped[str] = mapped_column(String(24), default="idle", nullable=False)
+    pending_question: Mapped[str | None] = mapped_column(Text, nullable=True)
+    pending_options_json: Mapped[str] = mapped_column(Text, default="[]", nullable=False)
+    pending_context_json: Mapped[str] = mapped_column(Text, default="{}", nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
 class McpAccessToken(Base):
     __tablename__ = "mcp_access_tokens"
     __table_args__ = (Index("ix_mcp_token_project_created", "project_id", "created_at"),)
@@ -128,3 +141,5 @@ class OAuthIdentity(Base):
     email_snapshot: Mapped[str | None] = mapped_column(String(320), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+

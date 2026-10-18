@@ -516,6 +516,33 @@ def program_schema() -> dict[str, Any]:
     }, ("components", "assembly", "note"))
 
 
+# CADIA_NEMOTRON_CONVERSATIONAL_TURN_V1
+def conversational_turn_schema() -> dict[str, Any]:
+    """Return one constrained turn: CAD action, blocking clarification, or grounded answer."""
+    action = _obj({
+        "response_type": {"type": "string", "const": "action"},
+        "program": program_schema(),
+        "message": {"type": "string"},
+        "options": {"type": "array", "maxItems": 0, "items": STRING},
+        "note": {"type": "string"},
+    }, ("response_type", "program", "message", "options", "note"))
+    clarify = _obj({
+        "response_type": {"type": "string", "const": "clarify"},
+        "program": {"type": "null"},
+        "message": STRING,
+        "options": {"type": "array", "maxItems": 6, "items": STRING},
+        "note": {"type": "string"},
+    }, ("response_type", "program", "message", "options", "note"))
+    answer = _obj({
+        "response_type": {"type": "string", "const": "answer"},
+        "program": {"type": "null"},
+        "message": STRING,
+        "options": {"type": "array", "maxItems": 0, "items": STRING},
+        "note": {"type": "string"},
+    }, ("response_type", "program", "message", "options", "note"))
+    return {"oneOf": [action, clarify, answer]}
+
+
 def operations_reference() -> str:
     return "\n".join(f"- {r.name}: {r.description}" for r in _OPERATION_LIST)
 
@@ -982,13 +1009,31 @@ class NemotronProgramAgent:
         self.provider.cancel()
 
     def plan(self, user_prompt: str, current_state: dict[str, Any], on_event=None) -> dict[str, Any]:
-        state_summary = {"document_type": current_state.get("document_type") or current_state.get("doc_type"),
-                         "selection": current_state.get("selection") or {}}
-        prompt = PROGRAM_SYSTEM_PROMPT + "\n\nCURRENT_STATE_SUMMARY:\n" + json.dumps(state_summary, ensure_ascii=False, separators=(",", ":")) + "\n\nUSER_REQUEST:\n" + str(user_prompt or "").strip()
-        program = self.provider.complete_cad_program(prompt, schema=program_schema(), model=self.model,
-                                                     effort=self.reasoning, on_event=on_event, repair=False)
-        self.last_program = validate_program(program)
-        return copy.deepcopy(self.last_program)
+        # Full feature/parameter/assembly/selection context is useful for conversation; raw topology arrays are too large.
+        state_summary = {key: value for key, value in (current_state or {}).items() if key not in {"faces", "edges"}}
+        interaction_rules = (
+            "\n\nCONVERSATIONAL_TURN_RULES:\n"
+            "Choose exactly one response_type: action, clarify, or answer. "
+            "Use action when CAD should change. Ask clarify only when a missing or ambiguous fact is genuinely blocking and materially changes the result. "
+            "Do not ask for confirmation merely because a change is complex, and do not ask for facts already resolved by current state, selection, prior conversation, or a safe conventional default. "
+            "Ask at most 3 concise questions in one message and provide short options when useful. "
+            "Use answer for design/model questions that require no CAD mutation. "
+            "When the user answers a previous clarification, combine that answer with prior conversation and execute once enough information is available."
+        )
+        prompt = (
+            PROGRAM_SYSTEM_PROMPT + interaction_rules
+            + "\n\nCURRENT_STATE_SUMMARY:\n" + json.dumps(state_summary, ensure_ascii=False, separators=(",", ":"))
+            + "\n\nUSER_REQUEST:\n" + str(user_prompt or "").strip()
+        )
+        turn = self.provider.complete_cad_program(prompt, schema=conversational_turn_schema(), model=self.model,
+                                                  effort=self.reasoning, on_event=on_event, repair=False)
+        _validate_schema(conversational_turn_schema(), turn, "turn")
+        if str(turn.get("response_type") or "") == "action":
+            program = validate_program(turn["program"])
+            self.last_program = copy.deepcopy(program)
+            turn = copy.deepcopy(turn)
+            turn["program"] = program
+        return copy.deepcopy(turn)
 
     def repair(self, user_prompt: str, error: str, on_event=None) -> dict[str, Any]:
         if self.last_program is None:
@@ -1024,7 +1069,25 @@ def execute_nemotron_program_with_repair(*, runtime, agent: NemotronProgramAgent
     direct = _try_direct_cadia_route(runtime=runtime, user_prompt=user_prompt, current_state=current_state, on_event=on_event)
     if direct is not None:
         return direct
-    program = agent.plan(user_prompt, current_state, on_event=on_event)
+    turn = agent.plan(user_prompt, current_state, on_event=on_event)
+    response_type = str(turn.get("response_type") or "action")
+    if response_type in {"clarify", "answer"}:
+        message = str(turn.get("message") or "").strip()
+        options = [str(x).strip() for x in (turn.get("options") or []) if str(x).strip()][:6]
+        display = message
+        if response_type == "clarify" and options:
+            display += "\n" + "\n".join(f"{i + 1}. {value}" for i, value in enumerate(options))
+        return {
+            "ok": True,
+            "message": display,
+            "interaction": {"type": response_type, "message": display, "options": options},
+            "program": {"route": "conversation", "note": str(turn.get("note") or "")},
+            "results": [],
+            "metrics": {},
+        }
+    program = turn.get("program")
+    if not isinstance(program, dict):
+        raise ValueError("Nemotron action turn did not contain a CAD program")
     interpreter = CadiaProgramInterpreter(runtime)
     first_error: Exception | None = None; last_error: Exception | None = None
     for attempt in range(max(0, int(max_repairs)) + 1):

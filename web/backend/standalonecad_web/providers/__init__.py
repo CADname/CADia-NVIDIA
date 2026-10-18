@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from ..ai_credentials import provider_ai, selected_ai
+from ..ai_credentials import provider_ai, selected_ai, shared_openai_enabled
 from ..database import SessionLocal
 from .anthropic_api import AnthropicAPIProvider
 from .app_server import AppServerClient, AppServerManager, app_server_manager
@@ -31,7 +31,7 @@ def provider_for_user(user_id: str, provider_name: str | None = None) -> AIProvi
             raise RuntimeError("Nebius Nemotron is not configured on this server.")
         return provider
     if selected.provider == "openai":
-        return OpenAIAPIProvider(api_key=selected.api_key, default_model=selected.model or None)
+        return OpenAIAPIProvider(api_key=selected.api_key, default_model=selected.model or None, user_id=user_id if shared_openai_enabled() else None)
     if selected.provider == "anthropic":
         return AnthropicAPIProvider(api_key=selected.api_key, default_model=selected.model or None)
     if selected.provider == "gemini":

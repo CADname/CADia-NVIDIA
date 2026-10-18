@@ -374,6 +374,26 @@ class CadDocument:
             })
         return out
 
+    def _attach_topology_lineage(self):
+        """Expose feature-stage snapshots to the runtime topology matcher.
+
+        This adds no feature-specific behavior and does not change serialized
+        document data or B-Rep geometry.  It is refreshed after every feature
+        stage so downstream history features can resolve persistent references
+        during the same rebuild.
+        """
+        if self.doc_type!='part' or self.shape is None:
+            return
+        stages=[(feature.name,feature.kind,stage)
+                for feature,stage in zip(self.features,self._feature_shape_cache)]
+        try:
+            self.shape._cadia_feature_stages=tuple(stages)
+            for kind in ('face','edge'):
+                attr='_cadia_generic_lineage_'+kind
+                if hasattr(self.shape,attr): delattr(self.shape,attr)
+        except Exception:
+            pass
+
     def _rebuild_once(self, old, start_index=0, *, associative_projection=False):
         start=max(0,min(int(start_index or 0),len(old)))
         can_resume=(start>0 and len(self._feature_shape_cache)>=start and not associative_projection)
@@ -392,6 +412,7 @@ class CadDocument:
                 else:
                     self._apply_feature(f,record=True)
                 self._feature_shape_cache.append(self.shape)
+                self._attach_topology_lineage()
         finally:
             self._association_refresh_enabled=prior_flag
 
@@ -423,7 +444,7 @@ class CadDocument:
 
     def add_feature(self,kind,name,params,operation='join'):
         if self.doc_type!='part':raise ValueError('Part feature tools require an active part document')
-        rec=FeatureRecord(name or f'{kind.capitalize()}{len(self.features)+1}',kind,copy.deepcopy(params),operation); self._apply_feature(rec,record=True); self._feature_shape_cache.append(self.shape); return rec
+        rec=FeatureRecord(name or f'{kind.capitalize()}{len(self.features)+1}',kind,copy.deepcopy(params),operation); self._apply_feature(rec,record=True); self._feature_shape_cache.append(self.shape); self._attach_topology_lineage(); return rec
 
     def find_feature(self,name):
         f=next((x for x in self.features if x.name==name),None)
@@ -928,9 +949,30 @@ class CadDocument:
             'thread_face':{'major_diameter_mm','pitch_mm','length_mm','offset_mm','right_handed','internal','reverse_direction'},
             'split_body':{'plane','keep'},
             'combine_bodies':{'base_index','tool_indices','operation','keep_tools'},
+            # CADIA_TYPED_FEATURE_DEFINITIONS_V1
+            # Explicit Definition contracts for user-facing native/accelerator features.
+            # Keep the contract typed: an unregistered feature must not become editable
+            # merely because a key happens to exist in its params dictionary.
+            'spur_gear':{'module','teeth','thickness_mm','bore_diameter_mm','pressure_angle_deg','backlash_mm','operation'},
+            'accelerator_gear':{'kind','module','teeth','width_mm','bore_diameter_mm','pressure_angle_deg','helix_angle_deg','backlash_mm','clearance_mm','rim_width_mm','cone_angle_deg','length_mm','height_mm','lead_angle_deg','thread_starts','sun_teeth','planet_teeth','planet_count','operation'},
+            'accelerator_shaft':{'sections','bore_diameter_mm','keyway_width_mm','keyway_depth_mm','keyway_length_mm','keyway_start_mm','operation'},
+            'parallel_key':{'width_mm','height_mm','length_mm','end_style','operation'},
+            'accelerator_bearing':{'kind','bore_diameter_mm','outer_diameter_mm','width_mm','rolling_elements','detailed','operation'},
+            'accelerator_spring':{'kind','wire_diameter_mm','mean_diameter_mm','free_length_mm','active_turns','right_handed','outer_diameter_mm','inner_diameter_mm','thickness_mm','free_height_mm','operation'},
+            'v_pulley':{'pitch_diameter_mm','width_mm','groove_count','groove_angle_deg','groove_depth_mm','groove_pitch_mm','bore_diameter_mm','operation'},
+            'accelerator_coupling':{'bore_diameter_mm','hub_diameter_mm','flange_diameter_mm','hub_length_mm','flange_thickness_mm','bolt_circle_diameter_mm','bolt_count','bolt_hole_diameter_mm','keyway_width_mm','keyway_depth_mm','operation'},
+            'lead_screw_nut':{'major_diameter_mm','pitch_mm','screw_length_mm','nut_length_mm','starts','thread_angle_deg','nut_outer_diameter_mm','clearance_mm','right_handed','operation'},
+            'sheet_metal_base':{'width_mm','height_mm','thickness_mm','bend_radius_mm','k_factor'},
+            'sheet_metal_flange':{'edge','length_mm','angle_deg','bend_radius_mm'},
+            'external_thread':{'major_diameter_mm','pitch_mm','length_mm','z0_mm','right_handed','operation'},
+            'metric_hex_bolt':{'diameter_mm','length_mm','pitch_mm','head_across_flats_mm','head_height_mm','thread_length_mm','right_handed','modeled_thread','operation'},
+            'metric_hex_nut':{'diameter_mm','pitch_mm','across_flats_mm','height_mm','right_handed','modeled_thread','operation'},
+            'metric_washer':{'diameter_mm','inner_diameter_mm','outer_diameter_mm','thickness_mm','operation'},
+            'mirror_body':{'plane','base_point_mm','keep_original'},
         }
         allowed=rules.get(f.kind)
-        if allowed is None:raise ValueError(f'Feature Definition editing is not yet typed for feature kind: {f.kind}; use edit_feature for expert/raw history edits')
+        if allowed is None:
+            raise ValueError(f'Feature Definition editing is not yet typed for feature kind: {f.kind}; use edit_feature for expert/raw history edits')
         bad=sorted(set(changes)-allowed)
         if bad:raise ValueError(f'Unsupported {f.kind} definition fields: {bad}; allowed={sorted(allowed)}')
         numeric_units={
@@ -939,22 +981,44 @@ class CadDocument:
             'radius_mm':'mm','spacing_mm1':'mm','spacing_mm2':'mm','thickness_mm':'mm','length_mm':'mm','width_mm':'mm','height_mm':'mm',
             'diameter1_mm':'mm','diameter2_mm':'mm','major_radius_mm':'mm','minor_radius_mm':'mm','depth_mm':'mm','cx_mm':'mm','cy_mm':'mm','z0_mm':'mm',
             'pitch_mm':'mm','helix_radius_mm':'mm','section_diameter_mm':'mm','major_diameter_mm':'mm','length_mm':'mm','offset_mm':'mm','angle_deg':'deg','size_value_mm':'mm','rotate_deg':'deg',
+            'module':'mm',
         }
+        # Infer units only for explicitly typed Definition fields.
+        for key in allowed:
+            if key.endswith('_mm'):numeric_units.setdefault(key,'mm')
+            elif key.endswith('_deg'):numeric_units.setdefault(key,'deg')
+        positive_keys={
+            'distance_mm','distance','diameter_mm','depth_mm','cbore_diameter_mm','cbore_depth_mm','csink_diameter_mm','radius_mm',
+            'spacing_mm1','spacing_mm2','thickness_mm','length_mm','width_mm','height_mm','diameter1_mm','major_radius_mm','minor_radius_mm',
+            'pitch_mm','helix_radius_mm','section_diameter_mm','major_diameter_mm','screw_length_mm','nut_length_mm','nut_outer_diameter_mm',
+            'head_across_flats_mm','head_height_mm','across_flats_mm','outer_diameter_mm','inner_diameter_mm','wire_diameter_mm','mean_diameter_mm',
+            'free_length_mm','groove_depth_mm','groove_pitch_mm','hub_diameter_mm','flange_diameter_mm','hub_length_mm','flange_thickness_mm',
+        }
+        nonnegative_keys={'clearance_mm','offset_mm','thread_length_mm','bore_diameter_mm','backlash_mm','keyway_start_mm'}
+        integer_keys={'count','count1','count2','starts','thread_starts','groove_count','bolt_count','rolling_elements','teeth','sun_teeth','planet_teeth','planet_count'}
         for key,value in changes.items():
             if key=='operation':
                 op=str(value).lower()
                 if op not in {'new','join','add','cut','subtract','intersect','common'}:raise ValueError('operation must be new|join|cut|intersect')
                 f.operation=op; continue
+            if key in integer_keys and value is not None:
+                iv=int(value)
+                if key in {'starts','thread_starts'} and iv<1:raise ValueError(f'{key} must be >= 1')
+                if key not in {'bolt_count'} and iv<1:raise ValueError(f'{key} must be >= 1')
+                if key=='bolt_count' and iv<0:raise ValueError('bolt_count must be >= 0')
+                f.params[key]=iv; continue
             if key in numeric_units and value is not None and not isinstance(value,(list,dict,bool)):
                 v=float(self.value(value) if isinstance(value,str) else value)
-                positive_keys={'distance_mm','distance','diameter_mm','depth_mm','cbore_diameter_mm','cbore_depth_mm','csink_diameter_mm','radius_mm','spacing_mm1','spacing_mm2','thickness_mm','length_mm','width_mm','height_mm','diameter1_mm','major_radius_mm','minor_radius_mm','pitch_mm','helix_radius_mm','section_diameter_mm'}
                 if key in positive_keys and v<=0:raise ValueError(f'{key} must be > 0')
+                if key in nonnegative_keys and v<0:raise ValueError(f'{key} must be >= 0')
                 self._set_feature_numeric_param(f,key,v,numeric_units[key]); continue
-            if key in ('count','count1','count2') and value is not None:
-                iv=int(value)
-                if iv<1:raise ValueError(f'{key} must be >= 1')
-                f.params[key]=iv; continue
             f.params[key]=copy.deepcopy(value)
+        if f.kind=='lead_screw_nut':
+            a=float(self.value(f.params.get('thread_angle_deg',30.0)))
+            if a<20.0 or a>60.0:raise ValueError('lead_screw_nut thread_angle_deg must be between 20 and 60 degrees')
+            if int(f.params.get('starts',1))<1:raise ValueError('lead_screw_nut starts must be >= 1')
+            sl=float(self.value(f.params.get('screw_length_mm',0))); nl=float(self.value(f.params.get('nut_length_mm',0)))
+            if sl<=0 or nl<=0 or nl>=sl:raise ValueError('lead_screw_nut requires 0 < nut_length_mm < screw_length_mm')
         if f.kind=='extrude' and str(f.params.get('direction','positive')).lower() not in {'positive','negative','symmetric'}:raise ValueError('extrude direction must be positive|negative|symmetric')
         if f.kind=='hole' and str(f.params.get('kind','drilled')).lower() not in {'drilled','counterbore','countersink'}:raise ValueError('hole kind must be drilled|counterbore|countersink')
         if f.kind=='move_faces':
@@ -2709,13 +2773,185 @@ class CadDocument:
             self._last_assembly_solve={'converged':False,'error':str(exc)}
             for j in active_joints:j.health='sick'
 
+    def _assembly_occurrence_shape(self, occurrence_name):
+        """Return occurrence-local geometry after assembly-context features.
+
+        This mirrors Inventor's native-object vs occurrence-proxy split: ``Occurrence.shape``
+        is always the source/native component geometry, while assembly features are replayed
+        only for their declared participants and never mutate the source part definition.
+        """
+        if occurrence_name not in self.occurrences:
+            raise ValueError(f'Occurrence not found: {occurrence_name}')
+        occ=self.occurrences[occurrence_name]
+        shape=occ.shape
+        if shape is None:return None
+        for feature in self.features:
+            if feature.suppressed:continue
+            participants=(feature.params or {}).get('participant_params') or {}
+            if occurrence_name not in participants:continue
+            local=copy.deepcopy(participants[occurrence_name] or {})
+            if feature.kind=='assembly_context_command':
+                shape=self._replay_assembly_context_command(shape,(feature.params or {}).get('command'),local.get('params') or {},local.get('selection') or {})
+                continue
+            # Backward-compatible replay for assembly feature records created before the
+            # generic GeometryProxy command layer.  New edits never enter this path.
+            for key,value in (feature.params or {}).items():
+                if key not in {'participant_params','participants'} and key not in local:
+                    local[key]=copy.deepcopy(value)
+            tmp=CadDocument(); tmp.reset('part'); tmp.units=self.units
+            tmp.parameters=copy.deepcopy(self.parameters); tmp.shape=shape; tmp.imported_shape=shape
+            rec=FeatureRecord(feature.name,feature.kind,local,feature.operation,feature.suppressed)
+            tmp._apply_feature(rec,record=False)
+            out=tmp.shape
+            if out is None or out.isNull() or not bool(out.isValid()):
+                raise ValueError(f'Assembly feature {feature.name} produced an invalid B-Rep for {occurrence_name}')
+            shape=out
+        return shape
+
+    def _assembly_topology_ref_to_local(self, occurrence_name, topology_type, assembly_ref):
+        """Resolve an assembly-space topology reference to its native occurrence object.
+
+        This is the NativeObject side of the Inventor-style GeometryProxy model.  The
+        resolver depends only on topology type (Face/Edge), rigid occurrence transform,
+        and persistent topology descriptors; it does not know which modeling feature
+        will consume the result.
+        """
+        if occurrence_name not in self.occurrences:
+            raise ValueError(f'Occurrence not found: {occurrence_name}')
+        kind=str(topology_type or '').lower()
+        if kind=='edge':
+            records_fn=edge_records; elements_fn=lambda sh: sh.Edges(); matcher=match_edge; maker=make_edge_ref; measure_key='length'
+        elif kind=='face':
+            records_fn=face_records; elements_fn=lambda sh: sh.Faces(); matcher=match_face; maker=make_face_ref; measure_key='area'
+        else:
+            raise ValueError(f'Unsupported assembly topology type: {topology_type}')
+        occ=self.occurrences[occurrence_name]
+        local_shape=occ.display_shape or self._assembly_occurrence_shape(occurrence_name) or occ.shape
+        if local_shape is None:raise ValueError(f'Occurrence has no geometry: {occurrence_name}')
+        world_shape=transform_shape(local_shape,occ.position_mm,occ.rotation_deg_xyz)
+        target=matcher(world_shape,assembly_ref)
+        world_rows=records_fn(world_shape); world_items=elements_fn(world_shape)
+        local_rows=records_fn(local_shape); local_items=elements_fn(local_shape)
+        target_idx=next((i for i,item in enumerate(world_items) if item.isSame(target)),None)
+        if target_idx is not None and target_idx < len(local_items):
+            wr=world_rows[target_idx]; lr=local_rows[target_idx]
+            wm=float(wr.get(measure_key,0) or 0); lm=float(lr.get(measure_key,0) or 0)
+            if wr.get('geom')==lr.get('geom') and abs(wm-lm) <= max(1e-7,abs(wm)*1e-8):
+                return maker(local_shape,lr['id'])
+        target_row=None
+        for row,item in zip(world_rows,world_items):
+            try:
+                if item.isSame(target):target_row=row; break
+            except Exception:pass
+        if target_row is None:raise ValueError(f'Selected assembly {kind} could not be resolved')
+        tc=np.asarray(target_row.get('center') or [0,0,0],float); tm=float(target_row.get(measure_key,0) or 0)
+        candidates=[]
+        for lr,item in zip(local_rows,local_items):
+            if lr.get('geom')!=target_row.get('geom'):continue
+            lm=float(lr.get(measure_key,0) or 0)
+            if abs(lm-tm) > max(1e-6,abs(tm)*1e-7):continue
+            try:
+                world_item=transform_shape(item,occ.position_mm,occ.rotation_deg_xyz)
+                c=world_item.Center(); dist=float(np.linalg.norm(np.asarray([c.x,c.y,c.z],float)-tc))
+            except Exception:continue
+            candidates.append((dist,lr))
+        candidates.sort(key=lambda x:x[0])
+        if not candidates or candidates[0][0] > 1e-5:
+            raise ValueError(f'Selected assembly {kind} could not be mapped to its occurrence')
+        if len(candidates)>1 and abs(candidates[1][0]-candidates[0][0]) < 1e-8:
+            raise ValueError(f'Selected assembly {kind} is ambiguous in occurrence context; reselect it')
+        return maker(local_shape,candidates[0][1]['id'])
+
+    def _replay_assembly_context_command(self, shape, command, params, selection=None):
+        """Replay any ordinary part command on occurrence-local geometry.
+
+        The assembly layer does not maintain a whitelist of Fillet/Chamfer/Hole/etc.
+        It reuses the existing canonical command implementation against a transient Part,
+        exactly so one feature path remains the source of truth.
+        """
+        from .engine import CadEngine
+        engine=CadEngine()
+        td=engine.doc
+        td.reset('part'); td.title='Assembly Context'; td.units=self.units; td.material=self.material
+        td.parameters=copy.deepcopy(self.parameters); td.properties=copy.deepcopy(self.properties); td.property_sets=copy.deepcopy(self.property_sets)
+        td.shape=shape; td.imported_shape=shape
+        engine.selection=copy.deepcopy(selection or {})
+        engine.execute(str(command),copy.deepcopy(params or {}))
+        out=engine.doc.shape
+        if out is None or out.isNull() or not bool(out.isValid()):
+            raise ValueError(f'Assembly-context command {command} produced an invalid B-Rep')
+        return out
+
+    def add_assembly_context_command(self, command, occurrence_name, params, selection=None, name=None):
+        """Persist one occurrence-scoped edit without mutating the source definition.
+
+        ``command`` and ``params`` are the same canonical operation already used for Part
+        editing.  The only assembly-specific data is the participant occurrence and its
+        GeometryProxy-resolved local selection.  This keeps assembly context orthogonal
+        to feature type.
+        """
+        if self.doc_type!='assembly':raise ValueError('Assembly context command requires an active assembly')
+        occurrence_name=str(occurrence_name or '')
+        if occurrence_name not in self.occurrences:raise ValueError(f'Occurrence not found: {occurrence_name}')
+        effective=self._assembly_occurrence_shape(occurrence_name)
+        # Validate through the exact ordinary Part command before committing history.
+        self._replay_assembly_context_command(effective,command,params,selection)
+        base=re.sub(r'[^A-Za-z0-9]+',' ',str(command)).title().replace(' ','') or 'AssemblyEdit'
+        existing={f.name for f in self.features}; i=1
+        while (name or f'{base}{i}') in existing:
+            if name:raise ValueError(f'Feature already exists: {name}')
+            i+=1
+        payload={
+            'command':str(command),
+            'participants':[occurrence_name],
+            'participant_params':{occurrence_name:{'params':copy.deepcopy(params or {}),'selection':copy.deepcopy(selection or {})}},
+        }
+        rec=FeatureRecord(name or f'{base}{i}','assembly_context_command',payload,'join')
+        self.features.append(rec)
+        try:self.rebuild_assembly(solve=False)
+        except Exception:
+            self.features.pop(); self.rebuild_assembly(solve=False); raise
+        return rec
+
+    def add_assembly_feature(self, kind, participant_params, shared_params=None, operation='join', name=None):
+        """Create a generic Inventor-style assembly feature with explicit participants.
+
+        ``participant_params`` maps each occurrence name to topology/input parameters in
+        that occurrence's native coordinate system.  The record is replayed over source
+        component geometry at assembly rebuild time, so source part definitions remain
+        immutable and one occurrence can differ from another.  This is deliberately a
+        feature-agnostic participant mechanism; individual feature tools only translate
+        their public inputs into this common representation.
+        """
+        if self.doc_type!='assembly':raise ValueError('Assembly feature requires an active assembly')
+        pp=copy.deepcopy(participant_params or {})
+        if not pp:raise ValueError('Assembly feature requires at least one occurrence participant')
+        missing=[n for n in pp if n not in self.occurrences]
+        if missing:raise ValueError('Occurrence not found: '+', '.join(missing))
+        params=copy.deepcopy(shared_params or {})
+        params['participants']=list(pp); params['participant_params']=pp
+        base=str(kind).capitalize(); i=1; existing={f.name for f in self.features}
+        while (name or f'{base}{i}') in existing:
+            if name:raise ValueError(f'Feature already exists: {name}')
+            i+=1
+        rec=FeatureRecord(name or f'{base}{i}',str(kind),params,str(operation))
+        self.features.append(rec)
+        try:self.rebuild_assembly(solve=False)
+        except Exception:
+            self.features.pop(); self.rebuild_assembly(solve=False); raise
+        return rec
+
     def rebuild_assembly(self,solve=True):
         if self.doc_type!='assembly':return
         if solve and (self.constraints or self.joints):self.solve_assembly_constraints()
         solids=[]
-        for occ in self.occurrences.values():
-            if occ.suppressed or occ.shape is None:continue
-            solids.append(transform_shape(occ.shape,occ.position_mm,occ.rotation_deg_xyz))
+        for name,occ in self.occurrences.items():
+            if occ.suppressed or occ.shape is None:
+                occ.display_shape=None
+                continue
+            effective=self._assembly_occurrence_shape(name)
+            occ.display_shape=effective
+            solids.append(transform_shape(effective,occ.position_mm,occ.rotation_deg_xyz))
         if not solids:self.shape=None
         elif len(solids)==1:self.shape=solids[0]
         else:self.shape=cq.Compound.makeCompound(solids)
@@ -2745,6 +2981,16 @@ class CadDocument:
         if self.doc_type!='assembly':raise ValueError('delete_occurrence requires an active assembly')
         if name not in self.occurrences:raise ValueError(f'Occurrence not found: {name}')
         removed=self.occurrences.pop(name)
+        # Inventor-style assembly-feature participant semantics: deleting one occurrence
+        # removes only that participant.  Features with no remaining participants vanish.
+        kept_features=[]
+        for f in self.features:
+            pp=(f.params or {}).get('participant_params')
+            if isinstance(pp,dict) and name in pp:
+                pp=copy.deepcopy(pp); pp.pop(name,None); f.params['participant_params']=pp; f.params['participants']=list(pp)
+                if not pp:continue
+            kept_features.append(f)
+        self.features=kept_features
         deleted_constraints=[x.name for x in self.constraints if x.a_occurrence==name or x.b_occurrence==name]
         deleted_joints=[x.name for x in self.joints if x.a_occurrence==name or x.b_occurrence==name]
         self.constraints=[x for x in self.constraints if x.a_occurrence!=name and x.b_occurrence!=name]
@@ -2848,9 +3094,9 @@ class CadDocument:
         if missing:raise ValueError('Occurrence not found: '+', '.join(missing))
         use=[self.occurrences[n] for n in requested if not self.occurrences[n].suppressed]; pairs=[]; total=0.0; errors=[]
         for i,a in enumerate(use):
-            sa=transform_shape(a.shape,a.position_mm,a.rotation_deg_xyz)
+            sa=transform_shape(a.display_shape or self._assembly_occurrence_shape(a.name) or a.shape,a.position_mm,a.rotation_deg_xyz)
             for b in use[i+1:]:
-                sb=transform_shape(b.shape,b.position_mm,b.rotation_deg_xyz)
+                sb=transform_shape(b.display_shape or self._assembly_occurrence_shape(b.name) or b.shape,b.position_mm,b.rotation_deg_xyz)
                 try:
                     common=cq.Workplane(obj=sa).intersect(sb).val(); vol=float(common.Volume()) if common is not None else 0.0
                 except Exception as exc:
@@ -2865,7 +3111,7 @@ class CadDocument:
             o=self.occurrences[name]
             if ref:
                 item=find_interface(o.interfaces,ref); p,d=transformed_frame(item['origin'],item.get('direction'),o); return cq.Vertex.makeVertex(*p)
-            return transform_shape(o.shape,o.position_mm,o.rotation_deg_xyz)
+            return transform_shape(o.display_shape or self._assembly_occurrence_shape(name) or o.shape,o.position_mm,o.rotation_deg_xyz)
         A=target(a_occ,a_ref); B=target(b_occ,b_ref); errors=[]
         try:dist=A.distance(B)
         except Exception as exc1:
@@ -2911,7 +3157,7 @@ class CadDocument:
             return out
         occurrences={}
         for k,o in self.occurrences.items():
-            row={q:v for q,v in asdict(o).items() if q not in {'shape','source_session_id','children'}}
+            row={q:v for q,v in asdict(o).items() if q not in {'shape','display_shape','source_session_id','children'}}
             row['path']=portable_path(o.path); row['path_relative_to']='assembly' if base_dir else None
             row['children']=portable_children(getattr(o,'children',[]))
             try:row['snapshot_brep_b64']=self._shape_to_brep_b64(o.shape) if o.shape is not None else None
@@ -2957,7 +3203,9 @@ class CadDocument:
                     if f.suppressed:self.features.append(f)
                     else:self._apply_feature(f,record=True)
                     self._feature_shape_cache.append(self.shape)
+                    self._attach_topology_lineage()
             else:
+                self.features=[FeatureRecord(**f) for f in d.get('features',[])]
                 self.occurrences={}
                 def resolve_children(items):
                     out=[]

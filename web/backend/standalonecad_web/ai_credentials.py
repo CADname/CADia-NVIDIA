@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import os
 from dataclasses import dataclass
 
 from cryptography.fernet import Fernet, InvalidToken
@@ -56,10 +57,20 @@ def selected_connection(db: Session, user_id: str) -> AIProviderConnection | Non
     )
 
 
+def shared_openai_enabled() -> bool:
+    # Fail closed when the operator has not configured a server-owned key.
+    return (os.getenv("CADIA_SHARED_OPENAI_ENABLED", "false").lower() in {"1", "true", "yes", "on"}
+            and bool(settings.openai_api_key) and bool(settings.openai_api_model))
+
+
 def selected_ai(db: Session, user_id: str) -> SelectedAI:
     row = selected_connection(db, user_id)
     if row is None:
+        if shared_openai_enabled():
+            return SelectedAI(provider="openai", api_key=settings.openai_api_key, model=settings.openai_api_model)
         return SelectedAI(provider="codex")
+    if row.provider == "openai" and shared_openai_enabled():
+        return SelectedAI(provider="openai", api_key=settings.openai_api_key, model=settings.openai_api_model)
     return SelectedAI(provider=row.provider, api_key=decrypt_secret(row.encrypted_api_key), model=row.model or "")
 
 
@@ -78,6 +89,8 @@ def provider_ai(db: Session, user_id: str, provider: str) -> SelectedAI:
     provider = provider.strip().lower()
     if provider in {"codex", "codex_direct"}:
         return SelectedAI(provider=provider)
+    if provider == "openai" and shared_openai_enabled():
+        return SelectedAI(provider="openai", api_key=settings.openai_api_key, model=settings.openai_api_model)
     row = provider_connection(db, user_id, provider)
     if row is None:
         return SelectedAI(provider=provider)

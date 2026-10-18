@@ -56,9 +56,10 @@ class DesktopParityCodexAgent(CodexAgent):
         self._web_client = client
         self._wrapper_path = client.codex_home / "bin" / "codex-desktop-parity"
         super().__init__(target_id=target_id, project_root=project_root, model=model, reasoning=reasoning)
-        # Desktop CodexAgent uses an otherwise-empty agent workspace.  Keep the
-        # same semantics while isolating concurrent web users from one another.
-        self.workspace = client.workspace
+        # Keep generated CAD artifacts inside the current project. Authentication
+        # remains per-user through AppServerClient/CODEX_HOME, but a user-global CAD
+        # workspace can create persisted assembly paths outside project storage.
+        self.workspace = (Path(project_root) / "agent-workspace").resolve()
         self.workspace.mkdir(parents=True, exist_ok=True, mode=0o700)
 
     @staticmethod
@@ -98,12 +99,14 @@ class DesktopParityCodexAgent(CodexAgent):
 # to the desktop ChatGPT/Codex CLI execution transport, but retains the same
 # prompt/tool-catalog/retry/fallback contract for deployments that explicitly choose
 # operator-paid API mode.
+# CADIA_CONVERSATIONAL_PLAN_SCHEMA_V1
 PLAN_OUTPUT_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
+        "response_type": {"type": "string", "enum": ["action", "clarify", "answer"]},
         "calls": {
             "type": "array",
-            "minItems": 1,
+            "minItems": 0,
             "maxItems": 80,
             "items": {
                 "type": "object",
@@ -116,11 +119,14 @@ PLAN_OUTPUT_SCHEMA: dict[str, Any] = {
                 "additionalProperties": False,
             },
         },
+        "message": {"type": "string"},
+        "options": {"type": "array", "maxItems": 6, "items": {"type": "string"}},
         "note": {"type": "string"},
     },
-    "required": ["calls", "note"],
+    "required": ["response_type", "calls", "message", "options", "note"],
     "additionalProperties": False,
 }
+
 
 
 def desktop_catalog() -> list[dict[str, Any]]:

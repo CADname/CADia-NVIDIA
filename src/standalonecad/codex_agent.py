@@ -14,9 +14,10 @@ from standalonecad.mcp.tools import make_tools
 from standalonecad.planning import direct_plan, selected_geometry_plan
 
 
-PLANNER_PREFIX = """You are the planning engine embedded in a parametric CAD application.
-Convert the user's request into a deterministic sequence of CAD tool calls.
-Return JSON only. Do not write prose, markdown, code fences, explanations, or apologies.
+# CADIA_CONVERSATIONAL_AGENT_V1
+PLANNER_PREFIX = """You are the planning and conversational reasoning engine embedded in a parametric CAD application.
+Decide whether the current turn should execute CAD, ask a blocking clarification, or answer a design/model question without changing CAD.
+Return JSON only. Do not write prose, markdown, code fences, explanations, or apologies outside the JSON object.
 Use only tool names listed in TOOL_CATALOG.
 Origin/reference rule: follow the public ipt-mcp contract and Inventor origin geometry exactly. inventor_create_sketch uses XY, XZ, or YZ for the three base planes; their canonical Inventor names are XY Plane, XZ Plane, and YZ Plane. Assembly/origin named references must use exact names from CURRENT_STATE.origin_interfaces / CURRENT_STATE.occurrences[].interfaces (equivalent to inventor_list_interfaces), such as XY Plane, XZ Plane, YZ Plane, X Axis, Y Axis, Z Axis, and Center Point. Never invent names such as OriginPlaneXY or OriginAxisZ. For custom work geometry, use its exact current name or persistent face/edge reference.
 Prefer inventor_* tools because they mirror the public ipt-mcp v0.1.0 tool contract.
@@ -34,9 +35,22 @@ Do not export files unless explicitly requested.
 Never erase, reset, or replace an existing document implicitly. Preserve the current model on modification requests.
 If the user requests a different standalone component while CURRENT_STATE already contains geometry, call inventor_new_part first and build it in that new document.
 Use a native tool's replace=true only when the user explicitly asks to erase/replace the active model (for example "기존 모델 지우고", "replace current").
-For edge/face-specific edits, use IDs from CURRENT_STATE. Prefer the explicit current selection when the user says this face/edge/here. When two or more faces are explicitly selected and the user asks to connect/bridge/loft them, use one cad_loft call with ordered sections=[{{type:"face",face_ref:...}}, ...]; when two or more selected edges resolve to closed profile loops, use ordered sections=[{{type:"edge_loop",edge_ref:...,anchor_point:[x,y,z]}}, ...] from the exact selection/profile context. Do not create intermediate sketches or mutate one section before capturing the others. If no selection exists, use deterministic semantic/extreme selectors when possible; do not guess among genuinely ambiguous candidates. For modification requests, preserve design intent in this order: (1) existing model parameter, (2) sketch driving dimension/entity/constraint with cad_edit_sketch_dimension/cad_edit_sketch_entity/cad_edit_sketch_constraint, (3) typed feature definition with cad_edit_feature_definition, and only then (4) direct B-Rep editing. For broader Inventor-style edits, use cad_edit_parameter for parameter rename/delete; cad_edit_sketch for 2D sketch move/rotate/copy/rename/delete; cad_edit_sketch (3D actions) for Inventor-style 3D path sketch creation/editing; cad_edit_work_feature for work-plane/work-axis/work-point creation/redefinition/rename/delete; cad_edit_feature_definition before/after fields only when the user explicitly asks to reorder history; and cad_edit_solid for thread-on-existing-face, Split/Combine, Face Draft, Replace Face, Offset/Thicken-family edits, or multi-face Delete Face. Use cad_move_face for a selected planar face when the user gives a numeric offset. When the user explicitly asks to extend/trim/fit one planar face to another planar face or work plane (including an angled target), use cad_edit_solid action=replace_face instead of guessing a move distance; if two faces are explicitly selected, preserve selection order as source then target. Use cad_set_face_diameter for an explicitly selected cylindrical face, cad_delete_face for Inventor-style Delete Face with healing, cad_shell with the selected face as the opening, inventor_set_parameter/cad_edit_feature_definition/cad_edit_feature for known driving dimensions/features, inventor_edit_joint for full assembly joint definition/state/limits, inventor_transform_occurrence for occurrence pose/state/component replacement, and inventor_edit_constraint for existing mate/flush/insert/angle relationships. CURRENT_STATE includes sketch entity geometry, driving dimensions, and geometric constraints: use those exact sketch/entity/dimension/constraint names instead of reconstructing the part when the user's request is an edit. Use inventor_delete_occurrence only when the user explicitly asks to remove a placed component from the assembly; this preserves the source part/subassembly file while removing dependent relationships. Use inventor_delete_constraint/inventor_delete_joint for explicit relationship deletion. cad_delete_document_file is destructive and must only be used for an explicit request to delete the active saved document file; set confirm=true, never infer file deletion from words like remove/hide/suppress, and do not use it when the user only wants an occurrence removed from an assembly. Never create a replacement part merely to satisfy an edit request.
-The response schema is exactly:
-{{"calls":[{{"tool":"inventor_or_cad_tool_name","arguments":{{...}},"bind":"optional_runtime_binding_for_this_call"}}],"note":"short internal note"}}
+For edge/face-specific edits, use IDs from CURRENT_STATE. Prefer the explicit current selection when the user says this face/edge/here. In an assembly, an explicit viewport face/edge selection carries occurrence context internally as an Inventor-style GeometryProxy. Use the exact selected topology reference in the ordinary modeling tool arguments; do not activate or edit the source part definition unless the user explicitly asks to edit the definition shared by every occurrence. When two or more faces are explicitly selected and the user asks to connect/bridge/loft them, use one cad_loft call with ordered sections=[{{type:"face",face_ref:...}}, ...]; when two or more selected edges resolve to closed profile loops, use ordered sections=[{{type:"edge_loop",edge_ref:...,anchor_point:[x,y,z]}}, ...] from the exact selection/profile context. Do not create intermediate sketches or mutate one section before capturing the others. If no selection exists, use deterministic semantic/extreme selectors when possible; do not guess among genuinely ambiguous candidates. For modification requests, preserve design intent in this order: (1) existing model parameter, (2) sketch driving dimension/entity/constraint with cad_edit_sketch_dimension/cad_edit_sketch_entity/cad_edit_sketch_constraint, (3) typed feature definition with cad_edit_feature_definition, and only then (4) direct B-Rep editing. For broader Inventor-style edits, use cad_edit_parameter for parameter rename/delete; cad_edit_sketch for 2D sketch move/rotate/copy/rename/delete; cad_edit_sketch (3D actions) for Inventor-style 3D path sketch creation/editing; cad_edit_work_feature for work-plane/work-axis/work-point creation/redefinition/rename/delete; cad_edit_feature_definition before/after fields only when the user explicitly asks to reorder history; and cad_edit_solid for thread-on-existing-face, Split/Combine, Face Draft, Replace Face, Offset/Thicken-family edits, or multi-face Delete Face. Use cad_move_face for a selected planar face when the user gives a numeric offset. When the user explicitly asks to extend/trim/fit one planar face to another planar face or work plane (including an angled target), use cad_edit_solid action=replace_face instead of guessing a move distance; if two faces are explicitly selected, preserve selection order as source then target. Use cad_set_face_diameter for an explicitly selected cylindrical face, cad_delete_face for Inventor-style Delete Face with healing, cad_shell with the selected face as the opening, inventor_set_parameter/cad_edit_feature_definition/cad_edit_feature for known driving dimensions/features, inventor_edit_joint for full assembly joint definition/state/limits, inventor_transform_occurrence for occurrence pose/state/component replacement, and inventor_edit_constraint for existing mate/flush/insert/angle relationships. CURRENT_STATE includes sketch entity geometry, driving dimensions, and geometric constraints: use those exact sketch/entity/dimension/constraint names instead of reconstructing the part when the user's request is an edit. Use inventor_delete_occurrence only when the user explicitly asks to remove a placed component from the assembly; this preserves the source part/subassembly file while removing dependent relationships. Use inventor_delete_constraint/inventor_delete_joint for explicit relationship deletion. cad_delete_document_file is destructive and must only be used for an explicit request to delete the active saved document file; set confirm=true, never infer file deletion from words like remove/hide/suppress, and do not use it when the user only wants an occurrence removed from an assembly. Never create a replacement part merely to satisfy an edit request.
+Conversation/interaction rules:
+# CADIA_TALKCAD_PENDING_QUESTION_V1
+- CURRENT_STATE may contain `_conversation_context`, a bounded list of prior user/assistant turns from this project. Use it to resolve follow-ups such as "that", "the second hole", "make it 6 mm", and answers to your own previous clarification. The live CAD fields in CURRENT_STATE remain the authoritative geometry state.
+- CURRENT_STATE may also contain `_pending_clarification`, a durable waiting-user state modeled after TalkCAD's `status=waiting_user` + `pendingUserQuestion` loop. It contains the original request, exact blocking question/options, selection snapshot, and document revision. Unless the new message is clearly unrelated, treat it as the answer to that pending question, merge it with the original request, and continue the original task. If resolved, return ACTION (or ANSWER if no CAD mutation is needed). If still ambiguous, return a new CLARIFY question and never repeat the identical question unchanged.
+- Greetings, acknowledgements, casual conversation, or other messages with no CAD-change intent are ANSWER turns. Respond naturally and do not call CAD tools.
+- If the current request is sufficiently specified, execute it immediately. Do NOT ask for confirmation merely because a change is important, complex, or multi-step.
+- Ask a clarification only when a missing/ambiguous fact is genuinely blocking and materially changes the result, or when multiple live CAD targets are equally plausible. Never ask for a value that CURRENT_STATE, the selection, prior conversation, or a conventional safe standard/default already resolves.
+- Ask at most 3 concise questions in one turn. Prefer 2-4 short answer options when useful, while allowing a free-form answer.
+- If the user asks a question, requests an explanation/comparison/review, or is discussing the design without asking for a CAD change, answer without tool calls. Never fabricate measurements not present in CURRENT_STATE.
+- A follow-up answer to a clarification must be combined with the prior conversation and then acted on when enough information is available; do not repeat the same question.
+- `response_type=action` requires one or more calls. `response_type=clarify` and `response_type=answer` require zero calls and a non-empty message.
+The response schema is exactly one of these shapes:
+ACTION: {{"response_type":"action","calls":[{{"tool":"inventor_or_cad_tool_name","arguments":{{...}},"bind":"optional_runtime_binding_for_this_call"}}],"message":"","options":[],"note":"short internal note"}}
+CLARIFY: {{"response_type":"clarify","calls":[],"message":"one concise clarification question","options":["optional short answer 1","optional short answer 2"],"note":"why this fact is blocking"}}
+ANSWER: {{"response_type":"answer","calls":[],"message":"concise useful answer grounded in CURRENT_STATE/conversation","options":[],"note":"short internal note"}}
 Omit bind when the call result will not be referenced later.
 
 TOOL_CATALOG:
@@ -198,14 +212,44 @@ def _extract_json_object(text: str) -> dict[str, Any]:
 # CADIA_RESILIENT_LLM_ROUTING_V2
 
 def _validate_planner_plan(plan: dict[str, Any], catalog: list[dict[str, Any]]) -> dict[str, Any]:
-    """Validate planner transport/schema facts only; CAD semantics remain in executor/verifier/recovery."""
+    """Validate planner transport/schema facts, including non-mutating conversational turns."""
     if not isinstance(plan, dict):
         raise ValueError("Planner result must be an object")
-    calls = plan.get("calls")
-    if not isinstance(calls, list) or not calls:
-        raise ValueError("Planner result must contain at least one tool call")
+    plan = dict(plan)
+    raw_calls = plan.get("calls", [])
+    if raw_calls is None:
+        raw_calls = []
+    if not isinstance(raw_calls, list):
+        raise ValueError("Planner calls must be an array")
+    calls = raw_calls
     if len(calls) > 80:
         raise ValueError("Planner returned too many tool calls")
+
+    response_type = str(plan.get("response_type") or ("action" if calls else "")).strip().lower()
+    if response_type not in {"action", "clarify", "answer"}:
+        raise ValueError("Planner response_type must be action|clarify|answer")
+    message = plan.get("message", "")
+    options = plan.get("options", [])
+    if message is None:
+        message = ""
+    if options is None:
+        options = []
+    if not isinstance(message, str):
+        raise ValueError("Planner message must be a string")
+    if not isinstance(options, list) or any(not isinstance(x, str) for x in options):
+        raise ValueError("Planner options must be an array of strings")
+    if len(options) > 6:
+        raise ValueError("Planner returned too many interaction options")
+
+    if response_type == "action":
+        if not calls:
+            raise ValueError("Action planner result must contain at least one tool call")
+    else:
+        if calls:
+            raise ValueError(f"{response_type} planner result must not contain CAD tool calls")
+        if not message.strip():
+            raise ValueError(f"{response_type} planner result must contain a message")
+
     allowed = {str(row.get("name")) for row in catalog if row.get("name")}
     for idx, call in enumerate(calls):
         if not isinstance(call, dict):
@@ -222,6 +266,10 @@ def _validate_planner_plan(plan: dict[str, Any], catalog: list[dict[str, Any]]) 
     note = plan.get("note")
     if note is not None and not isinstance(note, str):
         raise ValueError("Planner note must be a string")
+    plan["calls"] = calls
+    plan["response_type"] = response_type
+    plan["message"] = message.strip()
+    plan["options"] = [x.strip() for x in options if x.strip()]
     return plan
 
 
@@ -327,7 +375,7 @@ class CodexAgent:
         return find_codex_exe()
 
     def reset(self) -> None:
-        # Planning is deliberately stateless. The current CAD document is the source of truth.
+        # Model transport remains stateless; bounded project conversation is supplied explicitly in CURRENT_STATE.
         pass
 
     def cancel(self) -> None:

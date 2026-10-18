@@ -11,7 +11,6 @@ type Props = {
   onError: (reason: unknown) => void
   onComplete: () => void | Promise<void>
   onConnect: () => void
-  initialVisionMode?: 'standard' | 'opencv5'
 }
 
 type NvidiaReview = {
@@ -88,11 +87,10 @@ const POLL_MS = 1300
 const POLL_RETRY_MAX_MS = 5000
 const POLL_DEADLINE_GRACE_MS = 60_000
 
-export default function PhotoCADModal({ projectId, connected, selectedModel, effort, onClose, onError, onComplete, onConnect, initialVisionMode = 'standard' }: Props) {
+export default function PhotoCADModal({ projectId, connected, selectedModel, effort, onClose, onError, onComplete, onConnect }: Props) {
   const [files, setFiles] = useState<File[]>([])
   const [notes, setNotes] = useState('')
   const [dimensionHint, setDimensionHint] = useState('')
-  const [visionMode, setVisionMode] = useState<'standard' | 'opencv5'>(initialVisionMode)
   const [job, setJob] = useState<Job | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const timer = useRef<number | null>(null)
@@ -161,7 +159,6 @@ export default function PhotoCADModal({ projectId, connected, selectedModel, eff
     form.append('dimension_hint', dimensionHint)
     form.append('model', selectedModel || 'gpt-5.6-sol')
     form.append('effort', effort || 'high')
-    form.append('vision_mode', visionMode)
     try {
       const created = await api<Job>(`/api/projects/${projectId}/photo-cad/jobs`, { method: 'POST', body: form })
       pollFailures.current = 0
@@ -190,15 +187,6 @@ export default function PhotoCADModal({ projectId, connected, selectedModel, eff
         </header>
 
         {!connected && <div className="visual-cad-warning">ChatGPT / Codex must be connected. <button onClick={onConnect}>Connect AI</button></div>}
-
-        <div className="vision-mode-switch">
-          <button disabled={busy} className={visionMode === 'standard' ? 'active' : ''} onClick={() => setVisionMode('standard')}>
-            <Sparkles size={16} /><span><b>Standard CADia</b><small>Existing multi-engine + NVIDIA review path stays unchanged</small></span>
-          </button>
-          <button disabled={busy} className={visionMode === 'opencv5' ? 'active opencv' : 'opencv'} onClick={() => setVisionMode('opencv5')}>
-            <ScanLine size={16} /><span><b>OpenCV 5 Vision</b><small>Multi-view evidence + deterministic candidate/repair gate</small></span>
-          </button>
-        </div>
 
         <div className="visual-cad-grid">
           {files.map((file, index) => (
@@ -243,7 +231,7 @@ export default function PhotoCADModal({ projectId, connected, selectedModel, eff
         </div>}
 
         <footer>
-          <div className="visual-cad-footnote">{visionMode === 'opencv5' ? 'OpenCV 5 extracts contours/lines/circles from every photo, influences native candidate ranking, then gates feature-level repair by deterministic source↔render agreement. Existing NVIDIA and public-runtime engines remain installed.' : 'Native path stays unchanged. When configured, NVIDIA Cosmos verifies source photos against CAD renders; Nebius Nemotron approves only bounded repair plans before Codex edits the existing B-Rep.'}</div>
+          <div className="visual-cad-footnote">Native path stays unchanged. When configured, NVIDIA Cosmos verifies source photos against CAD renders; Nebius Nemotron approves only bounded repair plans before Codex edits the existing B-Rep.</div>
           <div className="visual-cad-actions">
             {busy ? <button className="secondary" onClick={cancel}>Cancel</button> : <button className="secondary" onClick={onClose}>{job?.status === 'done' ? 'Close' : 'Cancel'}</button>}
             {job?.status !== 'done' && <button className="primary" disabled={!canStart} onClick={start}><Sparkles size={16} />Reconstruct CAD</button>}

@@ -1,0 +1,161 @@
+/* CADia Supplier Finder v4.3.2
+   Dedicated, desktop-first supplier workspace. Scoped so Manufacturing/CAD UI stays untouched. */
+.main-menu .supplier-menu-button{display:inline-flex;align-items:center;gap:5px;color:var(--fg);font-weight:650}
+.main-menu .supplier-menu-button svg{color:#7fa4ef}
+
+/* Turn the supplier dialog into a real workspace instead of a small modal. */
+.supplier-finder-modal.modal-card.cadia-studio{
+  width:calc(100vw - 24px)!important;
+  height:calc(100dvh - 24px)!important;
+  max-width:none!important;
+  max-height:none!important;
+  min-width:0;
+  padding:0!important;
+  border-radius:18px;
+}
+.supplier-finder-modal,.supplier-finder-modal *{box-sizing:border-box}
+.supplier-finder-header{
+  flex:none;
+  min-height:82px;
+  padding:15px 24px!important;
+  background:linear-gradient(120deg,#16202d,#111823 58%,#10151d)!important;
+}
+.supplier-finder-header .studio-brand{gap:13px}
+.supplier-finder-header .studio-brand-icon{width:43px;height:43px;border-radius:12px}
+.supplier-finder-header .studio-brand h2{margin:1px 0 3px;font-size:22px;line-height:1.1}
+.supplier-finder-header .studio-brand p{font-size:11px;line-height:1.35}
+.supplier-finder-header .studio-kicker{font-size:9px}
+.supplier-finder-header .studio-close{width:40px;height:40px}
+
+.supplier-finder-scroll{
+  flex:1;
+  min-height:0;
+  overflow-y:auto;
+  overflow-x:hidden;
+  overscroll-behavior:contain;
+}
+.supplier-finder-scroll::-webkit-scrollbar{width:9px}
+.supplier-finder-scroll::-webkit-scrollbar-thumb{background:#344256;border-radius:10px}
+.supplier-finder-content.market-wrap{
+  width:100%;
+  max-width:none;
+  min-height:100%;
+  padding:18px 22px 22px!important;
+  gap:14px!important;
+  overflow-x:hidden;
+}
+
+/* One compact command bar instead of a second giant title block. */
+.supplier-finder-content .supplier-search-card{
+  display:grid;
+  grid-template-columns:minmax(0,1fr) auto;
+  grid-template-areas:
+    "actions meta"
+    "message message"
+    "places places";
+  align-items:center;
+  column-gap:18px;
+  row-gap:10px;
+  padding:14px 16px;
+  border-radius:13px;
+}
+.supplier-finder-content .market-search-actions{
+  grid-area:actions;
+  min-width:0;
+  display:grid;
+  grid-template-columns:auto auto minmax(300px,1fr);
+  gap:10px;
+  align-items:center;
+}
+.supplier-finder-content .market-search-actions>.studio-btn{min-height:42px;white-space:nowrap}
+.supplier-finder-content .market-or{font-size:10px;text-align:center}
+.supplier-finder-content .market-place-form{width:100%;min-width:0;height:42px}
+.supplier-finder-content .market-place-form input{min-width:0;width:100%}
+.supplier-finder-content .market-search-meta{
+  grid-area:meta;
+  min-width:350px;
+  margin:0;
+  padding:0 0 0 18px;
+  border-top:0;
+  border-left:1px solid #2d3e52;
+  justify-content:flex-end;
+}
+.supplier-finder-content .market-search-meta>div:first-child{max-width:220px}
+.supplier-finder-content .market-search-meta strong{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.supplier-finder-content .market-radius{gap:6px}
+.supplier-finder-content .market-radius button{height:34px;min-width:54px;padding:0 11px}
+.supplier-finder-content .market-inline-error{grid-area:message;margin:0}
+.supplier-finder-content .market-place-results{grid-area:places;margin-top:0;grid-template-columns:repeat(3,minmax(0,1fr))}
+
+/* Map is the primary workspace; result list stays visible beside it. */
+.supplier-finder-content .market-locator-layout{
+  width:100%;
+  min-width:0;
+  min-height:0;
+  display:grid;
+  grid-template-columns:minmax(0,2.15fr) minmax(330px,.85fr);
+  gap:14px;
+  align-items:stretch;
+}
+.supplier-finder-content .market-map-column{min-width:0;min-height:0}
+.supplier-finder-content .market-map{
+  width:100%;
+  height:clamp(500px,calc(100dvh - 230px),780px);
+  min-height:500px;
+  border-radius:14px;
+}
+.supplier-finder-content .market-result-column{
+  min-width:0;
+  height:clamp(500px,calc(100dvh - 230px),780px);
+  min-height:500px;
+  border-radius:14px;
+}
+.supplier-finder-content .market-result-head{padding:14px 15px}
+.supplier-finder-content .market-result-head strong{font-size:13px}
+.supplier-finder-content .market-results{flex:1;min-height:0;max-height:none;padding:10px;overflow-y:auto}
+.supplier-finder-content .market-shop{padding:11px}
+.supplier-finder-content .market-shop strong{font-size:12px}
+.supplier-finder-content .market-shop small{font-size:10px}
+.supplier-finder-content .market-map-controls button{width:40px;height:40px;border-radius:9px}
+.supplier-finder-content .market-start{
+  width:100%;
+  min-height:clamp(470px,calc(100dvh - 250px),720px);
+  border-radius:14px;
+}
+.supplier-finder-content .market-start strong{font-size:16px}
+.supplier-finder-content .market-start span{font-size:12px}
+
+@media(max-width:1180px){
+  .supplier-finder-content .supplier-search-card{grid-template-columns:1fr;grid-template-areas:"actions" "meta" "message" "places"}
+  .supplier-finder-content .market-search-meta{min-width:0;padding:10px 0 0;border-left:0;border-top:1px solid #2d3e52;justify-content:space-between}
+  .supplier-finder-content .market-search-meta>div:first-child{max-width:55%}
+  .supplier-finder-content .market-place-results{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .supplier-finder-content .market-locator-layout{grid-template-columns:minmax(0,1.7fr) minmax(300px,.9fr)}
+}
+
+@media(max-width:900px){
+  .supplier-finder-modal.modal-card.cadia-studio{width:calc(100vw - 12px)!important;height:calc(100dvh - 12px)!important;border-radius:12px}
+  .supplier-finder-content.market-wrap{padding:14px!important}
+  .supplier-finder-content .market-search-actions{grid-template-columns:1fr}
+  .supplier-finder-content .market-or{display:none}
+  .supplier-finder-content .market-locator-layout{grid-template-columns:1fr}
+  .supplier-finder-content .market-map{height:480px;min-height:420px}
+  .supplier-finder-content .market-result-column{height:auto;min-height:280px;max-height:430px}
+  .supplier-finder-content .market-place-results{grid-template-columns:1fr}
+}
+
+@media(max-width:620px){
+  .supplier-finder-modal.modal-card.cadia-studio{width:100vw!important;height:100dvh!important;border-radius:0;border:0}
+  .supplier-finder-header{padding:11px 13px!important;min-height:70px}
+  .supplier-finder-header .studio-brand-icon{width:38px;height:38px}
+  .supplier-finder-header .studio-brand h2{font-size:19px}
+  .supplier-finder-header .studio-brand p,.supplier-finder-header .studio-kicker{display:none}
+  .supplier-finder-content.market-wrap{padding:10px!important;gap:10px!important}
+  .supplier-finder-content .supplier-search-card{padding:11px}
+  .supplier-finder-content .market-search-meta{align-items:flex-start;gap:10px;flex-direction:column}
+  .supplier-finder-content .market-search-meta>div:first-child{max-width:100%}
+  .supplier-finder-content .market-radius{width:100%;display:grid;grid-template-columns:auto repeat(3,1fr)}
+  .supplier-finder-content .market-radius button{min-width:0;width:100%}
+  .supplier-finder-content .market-map{height:390px;min-height:340px}
+  .supplier-finder-content .market-start{min-height:390px}
+}

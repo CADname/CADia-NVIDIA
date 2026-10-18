@@ -1,49 +1,24 @@
 import { FormEvent, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
-import { ArrowRight, Box, Check, Cpu, LockKeyhole, Orbit, PlayCircle } from 'lucide-react'
+import { ArrowRight, Box, Check, Cpu, LockKeyhole, Orbit } from 'lucide-react'
 import { api } from '../api'
-import type { Project, User } from '../types'
+import type { User } from '../types'
 
 type Props = { onAuthenticated: (user: User) => void }
-type GuestLaunch = { user: User; project: Project }
 
 export default function AuthScreen({ onAuthenticated }: Props) {
-  const navigate = useNavigate()
-  const [mode, setMode] = useState<'login' | 'register'>('login')
-  const [email, setEmail] = useState('')
+  const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
-  const [displayName, setDisplayName] = useState('')
-  const [error, setError] = useState(() => {
-    const oauthError = new URLSearchParams(window.location.search).get('oauth_error')
-    return oauthError ? `Google sign-in was not completed: ${oauthError}` : ''
-  })
+  const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
-  const [guestBusy, setGuestBusy] = useState(false)
-
-  const googleLogin = () => { window.location.href = '/api/auth/google/login' }
-
-  async function launchGuest() {
-    setError('')
-    setGuestBusy(true)
-    try {
-      const payload = await api<GuestLaunch>('/api/auth/guest', { method: 'POST' })
-      onAuthenticated(payload.user)
-      navigate(`/projects/${payload.project.id}`, { replace: true })
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason))
-    } finally {
-      setGuestBusy(false)
-    }
-  }
 
   async function submit(event: FormEvent) {
     event.preventDefault()
     setError('')
     setBusy(true)
     try {
-      const user = await api<User>(`/api/auth/${mode === 'login' ? 'login' : 'register'}`, {
+      const user = await api<User>('/api/auth/login', {
         method: 'POST',
-        body: JSON.stringify(mode === 'login' ? { email, password } : { email, password, display_name: displayName }),
+        body: JSON.stringify({ email: username, password }),
       })
       onAuthenticated(user)
     } catch (reason) {
@@ -66,7 +41,7 @@ export default function AuthScreen({ onAuthenticated }: Props) {
           <div className="feature-pills">
             <span><Cpu size={15} /> CadQuery / OCCT</span>
             <span><Orbit size={15} /> Face & Edge editing</span>
-            <span><LockKeyhole size={15} /> Per-user Codex isolation</span>
+            <span><LockKeyhole size={15} /> Judge-only demo access</span>
           </div>
         </div>
         <div className="wire-object" aria-hidden="true">
@@ -78,35 +53,16 @@ export default function AuthScreen({ onAuthenticated }: Props) {
       <section className="auth-form-side">
         <form className="auth-card" onSubmit={submit}>
           <div className="mobile-brand"><span className="brand-mark">C</span> CADia</div>
-          <p className="eyebrow">INSTANT ACCESS</p>
+          <p className="eyebrow">HACKATHON JUDGE ACCESS</p>
           <h2>Launch the CAD workspace</h2>
-          <p className="muted">Start instantly without creating an account. Connect ChatGPT/Codex when you want to run live AI modeling.</p>
-          <button type="button" className="primary wide launch-demo-button" onClick={launchGuest} disabled={guestBusy || busy}>
-            {guestBusy ? 'Launching…' : 'Launch CADia'} <PlayCircle size={17} />
-          </button>
-          <div className="auth-note"><Check size={14} /> Guest sessions are isolated. Your guest workspace and its data are permanently deleted when you sign out.</div>
-
-          <div className="auth-divider"><span>Returning user</span></div>
-          <p className="eyebrow">{mode === 'login' ? 'SIGN IN' : 'CREATE WORKSPACE'}</p>
-          <h2>{mode === 'login' ? 'Continue designing' : 'Create your account'}</h2>
-          <p className="muted">After CADia sign-in, you can connect ChatGPT/Codex, GitHub Copilot, Claude, Gemini, or an OpenAI API key.</p>
-          <button type="button" className="google-login-button" onClick={googleLogin} disabled={busy || guestBusy}>
-            <span className="google-g">G</span><span>Continue with Google</span>
-          </button>
-          <div className="auth-divider"><span>or</span></div>
-          {mode === 'register' && (
-            <label>Name<input autoComplete="name" value={displayName} onChange={(e) => setDisplayName(e.target.value)} placeholder="Your name" required /></label>
-          )}
-          <label>Email<input type="email" autoComplete="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="name@example.com" required /></label>
-          <label>Password<input type="password" minLength={8} autoComplete={mode === 'login' ? 'current-password' : 'new-password'} value={password} onChange={(e) => setPassword(e.target.value)} placeholder="At least 8 characters" required /></label>
+          <p className="muted">Enter the judge credentials provided with the hackathon submission. CADia AI is provided by the demo server, so no personal API key or ChatGPT connection is required.</p>
+          <label>Judge ID<input autoComplete="username" value={username} onChange={(e) => setUsername(e.target.value)} placeholder="Judge ID" required /></label>
+          <label>Password<input type="password" autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Password" required /></label>
           {error && <div className="form-error">{error}</div>}
-          <button className="primary wide" disabled={busy || guestBusy}>
-            {busy ? 'Working…' : mode === 'login' ? 'Sign in' : 'Create account'} <ArrowRight size={17} />
+          <button className="primary wide" disabled={busy}>
+            {busy ? 'Signing in…' : 'Sign in to CADia'} <ArrowRight size={17} />
           </button>
-          <button type="button" className="text-button" onClick={() => { setMode(mode === 'login' ? 'register' : 'login'); setError('') }}>
-            {mode === 'login' ? 'New to CADia? Create an account' : 'Already have an account? Sign in'}
-          </button>
-          <div className="auth-note"><Check size={14} /> Provider credentials are isolated by provider and encrypted on the server.</div>
+          <div className="auth-note"><Check size={14} /> Guest access and public account registration are disabled for this judge build.</div>
         </form>
       </section>
     </main>

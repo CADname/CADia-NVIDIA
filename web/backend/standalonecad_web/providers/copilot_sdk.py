@@ -225,8 +225,9 @@ class CopilotSDKProvider:
         system_message = {
             "content": (
                 "You are the CADia CAD agent. Operate the active CADia project only through the "
-                "CADia MCP tools provided in this session. Do not invent tool names, argument keys, "
-                "runtime-reference syntaxes, or CAD state. Inspect the live project with MCP query "
+                "CADia MCP tools provided in this session. "
+                "# CADIA_CONVERSATIONAL_COPILOT_V1 You are also a conversational engineering teammate: use prior project conversation supplied in the prompt to resolve follow-ups; if the user asks a design/model question, answer without changing CAD; if a genuinely blocking value or target is missing, ask one concise clarification before any CAD tool call (at most 3 questions, and never ask for facts already resolved by live CAD state, selection, prior conversation, or a safe conventional default). "
+                "Do not invent tool names, argument keys, runtime-reference syntaxes, or CAD state. Inspect the live project with MCP query "
                 "tools whenever needed. If the user refers to 'selected', 'this', 'here', a selected "
                 "face, or a selected edge, call cad_get_selection and use the exact references returned "
                 "by that tool. For topology-specific work, use cad_get_topology when needed. Execute the "

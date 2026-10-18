@@ -24,8 +24,10 @@ class OpenAIAPIProvider:
         base_url: str | None = None,
         default_model: str | None = None,
         transport: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
+        user_id: str | None = None,
     ) -> None:
         self.api_key = api_key if api_key is not None else settings.openai_api_key
+        self.user_id = user_id
         self.base_url = (base_url or settings.openai_api_base).rstrip("/")
         self.default_model = default_model or settings.openai_api_model
         self._transport = transport
@@ -133,17 +135,15 @@ class OpenAIAPIProvider:
             on_event("progress", {"message": "Requesting CAD plan from OpenAI API…", "percent": 8})
         payload: dict[str, Any] = {
             "model": selected_model,
-            "input": [{"role": "user", "content": prompt}],
-            "text": {
-                "format": {
-                    "type": "json_schema",
-                    "name": "cad_tool_plan",
-                    "strict": True,
-                    "schema": output_schema,
-                }
-            },
+            "input": [{"role": "user", "content": "Return a valid JSON object for the CAD plan.\n" + prompt}],
+            # CAD tools have distinct and dynamic argument shapes, which cannot
+            # be represented by the old strict schema with unrestricted objects.
+            # JSON mode + CADia's existing catalog validator retains safe checks.
+            "text": {"format": {"type": "json_object"}},
             "store": False,
         }
+        if self.user_id:
+            payload["max_output_tokens"] = max(2048, min(16384, int(__import__("os").getenv("CADIA_SHARED_OPENAI_MAX_OUTPUT_TOKENS", "10000"))))
         if effort:
             payload["reasoning"] = {"effort": effort}
         response = self._post(payload)

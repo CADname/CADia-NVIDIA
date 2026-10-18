@@ -488,8 +488,13 @@ class AppServerManager:
                     victim_key, victim = min(candidates, key=lambda item: item[1].last_access)
                     self._items.pop(victim_key)
                     victim.stop()
-                root = settings.data_root / "codex-users" / user_id
-                client = AppServerClient(user_id, root / "codex-home", root / "agent-workspace")
+                override_home = os.getenv("CADIA_CODEX_HOME_OVERRIDE", "").strip()
+                override_workspace = os.getenv("CADIA_CODEX_WORKSPACE_OVERRIDE", "").strip()
+                if os.getenv("CADIA_ISOLATED_WORKER") == "1" and override_home and override_workspace:
+                    client = AppServerClient(user_id, Path(override_home), Path(override_workspace))
+                else:
+                    root = settings.data_root / "codex-users" / user_id
+                    client = AppServerClient(user_id, root / "codex-home", root / "agent-workspace")
                 self._items[user_id] = client
             client.last_access = time.monotonic()
             return client

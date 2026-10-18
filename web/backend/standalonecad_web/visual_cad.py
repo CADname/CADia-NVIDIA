@@ -25,8 +25,11 @@ from .drawing2cad_native import (
 )
 from .drawing2cad_upstream import extract_partspec
 from .config import settings
+from .heavy_jobs import HeavyJobBusy, heavy_job_manager
+from .isolated_execution import run_isolated
 from .providers.app_server import app_server_manager
 from .state import planning_state
+from .visual_cad_reliability import preflight_plan
 from .web_agent import DesktopParityCodexAgent, desktop_catalog
 from .nvidia_review import run_engineering_review, render_review_views_isolated
 from .opencv_cad import (
@@ -286,8 +289,16 @@ class VisualCadJobManager:
     def __init__(self) -> None:
         self._lock = threading.RLock()
         self._jobs: dict[str, VisualCadJob] = {}
+        self._futures: dict[str, Any] = {}
         self._pool = ThreadPoolExecutor(max_workers=VISUAL_CAD_WORKERS, thread_name_prefix="cadia-visual-cad")
         self._inspection_pool = ThreadPoolExecutor(max_workers=OPENCV_INSPECTION_WORKERS, thread_name_prefix="cadia-opencv-inspect")
+
+    def start(self) -> None:
+        with self._lock:
+            if getattr(self._pool, "_shutdown", False):
+                self._pool = ThreadPoolExecutor(max_workers=VISUAL_CAD_WORKERS, thread_name_prefix="cadia-visual-cad")
+            if getattr(self._inspection_pool, "_shutdown", False):
+                self._inspection_pool = ThreadPoolExecutor(max_workers=OPENCV_INSPECTION_WORKERS, thread_name_prefix="cadia-opencv-inspect")
 
     def _job_state_path(self, job_id: str, user_id: str, project_id: str) -> Path:
         return runtime_manager.project_root(user_id, project_id) / "visual_cad" / "jobs" / f"{job_id}.json"
@@ -338,27 +349,50 @@ class VisualCadJobManager:
         except Exception:
             return None
 
+    def _token(self, job_id: str) -> str:
+        return f"visual:{job_id}"
+
     def create(self, job: VisualCadJob) -> VisualCadJob:
-        with self._lock:
-            if job.deadline_at is None:
-                job.deadline_at = time.time() + VISUAL_JOB_HARD_TIMEOUT_SECONDS
-            self._jobs[job.id] = job
-            self._purge_locked()
-            self._persist_job(job)
-        future = self._pool.submit(self._run, job.id)
-        future.add_done_callback(lambda completed, jid=job.id: self._worker_done(jid, completed))
-        threading.Thread(target=self._watchdog, args=(job.id,), name=f"cadia-visual-watchdog-{job.id[:8]}", daemon=True).start()
-        return job
+        token = self._token(job.id)
+        try:
+            heavy_job_manager.reserve(token, job.user_id, job.project_id, "drawing-to-cad", job.cancel_event)
+        except HeavyJobBusy:
+            raise
+        try:
+            # Persist any browser-runtime edits, then remove the in-process OCCT
+            # runtime before the disposable worker opens this project.
+            runtime_manager.drop(job.user_id, job.project_id)
+            job.deadline_at = None  # hard timeout begins only after a worker slot starts
+            with self._lock:
+                self._jobs[job.id] = job
+                self._purge_locked()
+                self._persist_job(job)
+            future = self._pool.submit(self._run, job.id)
+            with self._lock:
+                self._futures[job.id] = future
+            future.add_done_callback(lambda completed, jid=job.id: self._worker_done(jid, completed))
+            return job
+        except Exception:
+            heavy_job_manager.finish(token)
+            raise
 
     def _worker_done(self, job_id: str, future) -> None:
+        with self._lock:
+            self._futures.pop(job_id, None)
+            job = self._jobs.get(job_id)
+        if future.cancelled():
+            heavy_job_manager.finish(self._token(job_id))
+            if job is not None and job.status not in VISUAL_TERMINAL_STATUSES:
+                job.error = "Drawing-to-CAD job was cancelled before it started."
+                self._update(job, status="cancelled", message="Cancelled")
+            return
         try:
             exc = future.exception()
         except BaseException as callback_exc:
             exc = callback_exc
         if exc is None:
             return
-        with self._lock:
-            job = self._jobs.get(job_id)
+        heavy_job_manager.finish(self._token(job_id))
         if job is None or job.status in VISUAL_TERMINAL_STATUSES:
             return
         job.error = f"Drawing-to-CAD worker terminated unexpectedly: {exc}"
@@ -402,8 +436,40 @@ class VisualCadJobManager:
         if job.status in VISUAL_TERMINAL_STATUSES:
             return job
         job.cancel_event.set()
-        self._update(job, status="cancelling", message="Cancelling…")
+        heavy_job_manager.cancel_token(self._token(job.id))
+        with self._lock:
+            future = self._futures.get(job.id)
+        if future is not None and future.cancel():
+            self._update(job, status="cancelled", message="Cancelled")
+        else:
+            self._update(job, status="cancelling", message="Cancelling…")
         return job
+
+    def forget_project(self, user_id: str, project_id: str) -> None:
+        with self._lock:
+            stale = [jid for jid, job in self._jobs.items() if job.user_id == str(user_id) and job.project_id == str(project_id)]
+            for jid in stale:
+                self._jobs.pop(jid, None)
+                self._futures.pop(jid, None)
+
+    def forget_user(self, user_id: str) -> None:
+        with self._lock:
+            stale = [jid for jid, job in self._jobs.items() if job.user_id == str(user_id)]
+            for jid in stale:
+                self._jobs.pop(jid, None)
+                self._futures.pop(jid, None)
+
+    def shutdown(self) -> None:
+        with self._lock:
+            jobs = [job for job in self._jobs.values() if job.status not in VISUAL_TERMINAL_STATUSES]
+            futures = list(self._futures.values())
+        for job in jobs:
+            job.cancel_event.set()
+            heavy_job_manager.cancel_token(self._token(job.id))
+        for future in futures:
+            future.cancel()
+        self._pool.shutdown(wait=True, cancel_futures=True)
+        self._inspection_pool.shutdown(wait=True, cancel_futures=True)
 
     def _purge_locked(self) -> None:
         cutoff = time.time() - 6 * 3600
@@ -437,29 +503,54 @@ class VisualCadJobManager:
         with self._lock:
             job = self._jobs.get(job_id)
         if job is None:
+            heavy_job_manager.finish(self._token(job_id))
             return
+        token = self._token(job.id)
+        queue_postcheck = False
         try:
-            # Drawing→CAD always uses CADia's dedicated Codex app-server client inside
-            # _reconstruct(). The globally selected chat provider must not block it.
-            self._update(job, status="running", progress=3, message="Preparing drawing reconstruction…")
-            result = self._reconstruct(job)
-            queue_postcheck = False
+            self._update(job, status="queued", progress=1, message="Waiting for an isolated CAD worker…")
+            if not heavy_job_manager.acquire(token):
+                raise InterruptedError("Visual CAD job was cancelled before it started.")
+            job.deadline_at = time.time() + VISUAL_JOB_HARD_TIMEOUT_SECONDS
+            self._persist_job(job)
+            threading.Thread(target=self._watchdog, args=(job.id,), name=f"cadia-visual-watchdog-{job.id[:8]}", daemon=True).start()
+            self._update(job, status="running", progress=3, message="Starting isolated drawing reconstruction…")
+
+            def relay(kind: str, value: Any) -> None:
+                self._check_cancel(job)
+                if kind == "progress":
+                    if isinstance(value, dict):
+                        message = str(value.get("message") or job.message)
+                        percent = value.get("percent")
+                        progress = int(percent) if isinstance(percent, (int, float)) else None
+                    else:
+                        message, progress = str(value), None
+                    self._update(job, progress=progress, message=message)
+
+            result = run_isolated(
+                token=token,
+                kind="visual",
+                payload={"job": {
+                    "id": job.id, "user_id": job.user_id, "project_id": job.project_id,
+                    "input_files": dict(job.input_files), "notes": job.notes,
+                    "dimension_hint": job.dimension_hint, "model": job.model,
+                    "effort": job.effort, "vision_mode": job.vision_mode,
+                }},
+                cancel_event=job.cancel_event,
+                hard_timeout_seconds=VISUAL_JOB_HARD_TIMEOUT_SECONDS,
+                on_event=relay,
+            )
             if job.vision_mode == "opencv5":
                 inspection = result.get("opencv_vision") if isinstance(result, dict) else None
                 queue_postcheck = not (isinstance(inspection, dict) and inspection.get("status") == "done")
                 if queue_postcheck:
                     result["opencv_vision"] = {
-                        "mode": "opencv5",
-                        "status": "queued",
-                        "read_only": True,
-                        "action": "inspection_pending",
-                        "rescue": result.get("opencv_rescue"),
+                        "mode": "opencv5", "status": "queued", "read_only": True,
+                        "action": "inspection_pending", "rescue": result.get("opencv_rescue"),
                     }
             job.result = result
             self._check_cancel(job)
             self._update(job, status="done", progress=100, message="Editable CAD reconstructed")
-            if queue_postcheck:
-                self._inspection_pool.submit(self._run_opencv_postcheck, job.id)
         except TimeoutError as exc:
             job.error = str(exc)
             self._update(job, status="failed", message="Drawing reconstruction timed out")
@@ -469,6 +560,13 @@ class VisualCadJobManager:
         except Exception as exc:
             job.error = str(exc)
             self._update(job, status="failed", message="Drawing reconstruction failed")
+        finally:
+            heavy_job_manager.finish(token)
+            if queue_postcheck and job.status == "done":
+                try:
+                    self._inspection_pool.submit(self._run_opencv_postcheck, job.id)
+                except RuntimeError:
+                    pass
 
     def _set_postcheck_result(self, job: VisualCadJob, payload: dict[str, Any]) -> None:
         with self._lock:
@@ -483,71 +581,87 @@ class VisualCadJobManager:
             job = self._jobs.get(job_id)
         if job is None or job.vision_mode != "opencv5" or not isinstance(job.result, dict):
             return
-        rescue = job.result.get("opencv_rescue")
-        self._set_postcheck_result(job, {
-            "mode": "opencv5", "status": "running", "read_only": True,
-            "action": "inspecting", "rescue": rescue,
-        })
+        token = f"visual-inspect:{job.id}"
+        cancel_event = threading.Event()
         try:
-            runtime = runtime_manager.get(job.user_id, job.project_id)
-            report_dir = runtime.root / "visual_cad" / job.id / "opencv" / "postcheck"
-            expected_revision = job.result.get("state_revision")
-            current_state = runtime.state()
-            current_revision = (current_state.get("document") or {}).get("revision")
-            if expected_revision is not None and current_revision != expected_revision:
-                self._set_postcheck_result(job, {
-                    "mode": "opencv5", "status": "skipped_stale", "read_only": True,
-                    "action": "skipped",
-                    "reason": "CAD changed after reconstruction; stale OpenCV inspection was not run.",
-                    "rescue": rescue,
-                })
-                return
-            source_paths = {label: Path(path).resolve() for label, path in job.input_files.items() if Path(path).is_file()}
-            source = opencv_analyze_images(
-                source_paths, output_dir=report_dir / "source", source_kind="drawing"
-            )
-            rendered = _render_validation_views(runtime, report_dir / "renders", pass_index=40)
-            verification = opencv_verify_source_to_renders(
-                source_paths, rendered, output_dir=report_dir / "compare", source_kind="drawing"
-            )
-            # Never turn a pixel/CV discrepancy into an automatic CAD edit.  The raw
-            # verifier action is retained for diagnostics only.
-            final = opencv_compact_verification(verification)
-            raw_action = str(final.get("action") or "ambiguous")
-            final["raw_action"] = raw_action
-            final["action"] = "pass" if raw_action == "pass" else "review"
-            artifacts: list[dict[str, Any]] = []
-            for row in source.get("artifacts") or []:
-                item = dict(row)
-                item["path"] = f"postcheck/source/{item.get('path', '')}".strip("/")
-                artifacts.append(item)
-            for row in verification.get("artifacts") or []:
-                item = dict(row)
-                item["path"] = f"postcheck/compare/{item.get('path', '')}".strip("/")
-                artifacts.append(item)
-            payload = {
-                "mode": "opencv5",
-                "status": "done",
-                "read_only": True,
-                "source": opencv_compact_analysis(source),
-                "final": final,
-                "score": final.get("score", 0.0),
-                "action": final.get("action", "review"),
-                "raw_action": raw_action,
-                "issues": final.get("issues") or [],
-                "artifacts": artifacts,
-                "performance": verification.get("performance") or {},
-                "rescue": rescue,
-            }
-            _write_json(report_dir / "postcheck.json", payload)
-            self._set_postcheck_result(job, payload)
-        except Exception as exc:
-            # Post-check is intentionally fail-open. It must never change a completed
-            # modeling job into failed or roll back a valid model.
+            heavy_job_manager.reserve(token, job.user_id, job.project_id, "opencv-postcheck", cancel_event)
+        except HeavyJobBusy:
             self._set_postcheck_result(job, {
-                "mode": "opencv5", "status": "failed", "read_only": True,
-                "action": "unavailable", "reason": str(exc), "rescue": rescue,
+                "mode": "opencv5", "status": "skipped_busy", "read_only": True,
+                "action": "skipped", "reason": "A newer CAD job is already using this project.",
+                "rescue": job.result.get("opencv_rescue"),
             })
+            return
+        try:
+            runtime_manager.drop(job.user_id, job.project_id)
+            if not heavy_job_manager.acquire(token):
+                return
+            rescue = job.result.get("opencv_rescue")
+            self._set_postcheck_result(job, {
+                "mode": "opencv5", "status": "running", "read_only": True,
+                "action": "inspecting", "rescue": rescue,
+            })
+            try:
+                runtime = runtime_manager.get(job.user_id, job.project_id)
+                report_dir = runtime.root / "visual_cad" / job.id / "opencv" / "postcheck"
+                expected_revision = job.result.get("state_revision")
+                current_state = runtime.state()
+                current_revision = (current_state.get("document") or {}).get("revision")
+                if expected_revision is not None and current_revision != expected_revision:
+                    self._set_postcheck_result(job, {
+                        "mode": "opencv5", "status": "skipped_stale", "read_only": True,
+                        "action": "skipped",
+                        "reason": "CAD changed after reconstruction; stale OpenCV inspection was not run.",
+                        "rescue": rescue,
+                    })
+                    return
+                source_paths = {label: Path(path).resolve() for label, path in job.input_files.items() if Path(path).is_file()}
+                source = opencv_analyze_images(
+                    source_paths, output_dir=report_dir / "source", source_kind="drawing"
+                )
+                rendered = _render_validation_views(runtime, report_dir / "renders", pass_index=40)
+                verification = opencv_verify_source_to_renders(
+                    source_paths, rendered, output_dir=report_dir / "compare", source_kind="drawing"
+                )
+                final = opencv_compact_verification(verification)
+                raw_action = str(final.get("action") or "ambiguous")
+                final["raw_action"] = raw_action
+                final["action"] = "pass" if raw_action == "pass" else "review"
+                artifacts: list[dict[str, Any]] = []
+                for row in source.get("artifacts") or []:
+                    item = dict(row)
+                    item["path"] = f"postcheck/source/{item.get('path', '')}".strip("/")
+                    artifacts.append(item)
+                for row in verification.get("artifacts") or []:
+                    item = dict(row)
+                    item["path"] = f"postcheck/compare/{item.get('path', '')}".strip("/")
+                    artifacts.append(item)
+                payload = {
+                    "mode": "opencv5",
+                    "status": "done",
+                    "read_only": True,
+                    "source": opencv_compact_analysis(source),
+                    "final": final,
+                    "score": final.get("score", 0.0),
+                    "action": final.get("action", "review"),
+                    "raw_action": raw_action,
+                    "issues": final.get("issues") or [],
+                    "artifacts": artifacts,
+                    "performance": verification.get("performance") or {},
+                    "rescue": rescue,
+                }
+                _write_json(report_dir / "postcheck.json", payload)
+                self._set_postcheck_result(job, payload)
+            except Exception as exc:
+                self._set_postcheck_result(job, {
+                    "mode": "opencv5", "status": "failed", "read_only": True,
+                    "action": "unavailable", "reason": str(exc), "rescue": rescue,
+                })
+        finally:
+            try:
+                runtime_manager.drop(job.user_id, job.project_id)
+            finally:
+                heavy_job_manager.finish(token)
 
     def _reconstruct(self, job: VisualCadJob) -> dict[str, Any]:
         """Drawing -> CAD with Hotfix-5 native modeling preserved.
@@ -660,12 +774,47 @@ class VisualCadJobManager:
             with runtime.operation_lock:
                 restore(initial_snapshot)
                 _validate_plan(plan)
+                # Validate the exact public CAD tool schemas and sequential parameter
+                # dependencies before the first mutation. If the plan is structurally
+                # valid but references an unavailable/self/forward parameter, give the
+                # existing planner bounded concrete feedback and validate the replacement.
+                candidate = plan
+                current_state = planning_state(runtime.engine)
+                preflight_error: Exception | None = None
+                for preflight_attempt in range(3):
+                    try:
+                        candidate, _ = preflight_plan(runtime.executor, candidate, current_state)
+                        preflight_error = None
+                        break
+                    except Exception as exc:
+                        preflight_error = exc
+                        if preflight_attempt >= 2:
+                            break
+                        candidate = agent.repair(
+                            user_prompt,
+                            current_state,
+                            candidate,
+                            f"PRE_EXECUTION_PLAN_VALIDATION: {exc}",
+                            on_event=event,
+                            recovery_context={
+                                "stage": "preflight",
+                                "attempt": preflight_attempt + 1,
+                                "rules": [
+                                    "No CAD mutation has occurred yet. Return a complete replacement plan.",
+                                    "Use only public TOOL_CATALOG operations.",
+                                    "Create parameters before referencing them; never self-reference or forward-reference a parameter.",
+                                ],
+                            },
+                            progress_span=(38, 44),
+                        )
+                if preflight_error is not None:
+                    return None, None, f"{label} preflight failed: {preflight_error}"
                 executed = execute_with_failure_recovery(
                     executor=runtime.executor,
                     agent=agent,
                     user_prompt=user_prompt,
                     state_provider=lambda: planning_state(runtime.engine),
-                    plan=plan,
+                    plan=candidate,
                     on_event=event,
                     initial_progress_span=progress_span,
                     max_ai_repairs=max_ai_repairs,
@@ -1725,7 +1874,7 @@ Return only schema-conforming JSON.
         }
 
 
-visual_cad_jobs = VisualCadJobManager()
+visual_cad_jobs = None if os.getenv("CADIA_ISOLATED_WORKER") == "1" else VisualCadJobManager()
 
 
 def _normalize_spec(raw: dict[str, Any]) -> dict[str, Any]:

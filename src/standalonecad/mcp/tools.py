@@ -316,7 +316,7 @@ EXTENSIONS=[
 ('delete_sketch_constraint','Delete an existing geometric sketch constraint and rebuild downstream features.',obj({
     'sketch_name':nullable(s()),'constraint_name':s(),
 },['constraint_name'])),
-('edit_feature_definition','Validated Inventor Feature.Definition-style history edit for common features. Preserves d# bindings, supports rename, and can reposition a history feature before/after another feature using Inventor RepositionObject-style semantics.',obj({
+('edit_feature_definition','Validated Inventor Feature.Definition-style history edit using explicit typed feature contracts. Unregistered feature kinds are rejected instead of exposing arbitrary stored params. Preserves d# bindings, rename, and history reposition semantics.',obj({
     'feature_name':s(),'updates':{'type':'object','additionalProperties':True},'new_name':nullable(s()),'before':nullable(s()),'after':nullable(s()),
 },['feature_name'])),
 ('edit_feature','Edit parameters on an existing history feature and rebuild downstream geometry.',obj({

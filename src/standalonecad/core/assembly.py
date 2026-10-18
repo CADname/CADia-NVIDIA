@@ -31,6 +31,9 @@ class Occurrence:
     children: list[dict[str, Any]] = field(default_factory=list)
     reference_status: str = 'resolved'
     load_error: str | None = None
+    # Runtime-only assembly-context result.  `shape` remains the native/source component
+    # geometry; `display_shape` is the occurrence-local geometry after assembly features.
+    display_shape: Any = field(default=None, repr=False, compare=False)
 
 @dataclass
 class AssemblyConstraint:

@@ -285,15 +285,27 @@ def direct_plan(user_prompt: str, current_state: dict[str, Any] | None = None) -
     # Direct manipulation routes for the explicit current selection. These avoid asking
     # the LLM to rediscover a face/edge the user already clicked in the viewport.
     if selection.get('type') == 'edge' and selection.get('edge_ref'):
-        edge_id = str(selection['edge_ref'])
+        raw_items=selection.get('items') if isinstance(selection.get('items'),list) else None
+        items=[x for x in (raw_items or [selection]) if isinstance(x,dict) and x.get('edge_ref')]
+        groups={}
+        for item in items:
+            groups.setdefault(item.get('occurrence_name') or None,[]).append(str(item['edge_ref']))
         if any(k in low for k in ('필렛','fillet','라운드','round edge')):
             radius = _extract_number(q,[r'(?:필렛|fillet|반지름|radius|r)\s*[:=]?\s*([0-9]+(?:\.[0-9]+)?)\s*(?:mm)?',r'([0-9]+(?:\.[0-9]+)?)\s*mm\s*(?:필렛|fillet)'])
             if radius is not None:
-                return {'calls':[{'tool':'inventor_fillet','arguments':{'edgeIds':[edge_id],'radius':radius}}], 'note':'selected_edge_fillet'}
+                calls=[]
+                for occurrence,edge_ids in groups.items():
+                    args={'edgeIds':edge_ids,'radius':radius}
+                    calls.append({'tool':'inventor_fillet','arguments':args})
+                return {'calls':calls, 'note':'selected_edge_fillet'}
         if any(k in low for k in ('모따기','chamfer')):
             distance = _extract_number(q,[r'(?:모따기|chamfer|거리|distance)\s*[:=]?\s*([0-9]+(?:\.[0-9]+)?)\s*(?:mm)?',r'([0-9]+(?:\.[0-9]+)?)\s*mm\s*(?:모따기|chamfer)'])
             if distance is not None:
-                return {'calls':[{'tool':'inventor_chamfer','arguments':{'edgeIds':[edge_id],'distance':distance}}], 'note':'selected_edge_chamfer'}
+                calls=[]
+                for occurrence,edge_ids in groups.items():
+                    args={'edgeIds':edge_ids,'distance':distance}
+                    calls.append({'tool':'inventor_chamfer','arguments':args})
+                return {'calls':calls, 'note':'selected_edge_chamfer'}
 
     if selection.get('type') == 'face' and selection.get('face_ref'):
         face_id=str(selection['face_ref'])
@@ -835,6 +847,45 @@ class PlanExecutor:
             return {k: self._resolve_runtime_refs(v, completed, bindings, k) for k, v in value.items()}
         return value
 
+    def _capture_geometry_proxy_context(self) -> dict[str, Any] | None:
+        """Snapshot assembly ownership of an explicit viewport geometry selection.
+
+        Geometry ownership is executor metadata, not a fillet/chamfer tool argument.
+        It survives planner-driven document activation, as in Inventor's geometry
+        proxies that keep their ComponentOccurrence context.
+        """
+        with self.engine.lock:
+            session = self.engine._active_session()
+            document = self.engine.doc
+            if session is None or document is None or document.doc_type != 'assembly':
+                return None
+            selection = copy.deepcopy(self.engine.selection if isinstance(self.engine.selection, dict) else {})
+            items = self.engine._selection_topology_items(selection)
+            if not items:
+                return None
+            # Resolve now so an invalid or ambiguous reference cannot silently fall
+            # through into an unrelated Part later in the AI execution sequence.
+            for item in items:
+                document.reference_manager.create_geometry_proxy_from_selection(item)
+            return {'assembly_session_id': session.id, 'selection': selection, 'items': items}
+
+    def _dispatch_with_geometry_context(self, name: str, args: dict[str, Any], context: dict[str, Any] | None):
+        if context:
+            matched = []
+            for item in context['items']:
+                key = 'edge_ref' if item['type'] == 'edge' else 'face_ref'
+                if self.engine._value_contains_ref(args, item[key]):
+                    matched.append(item)
+            if matched:
+                with self.engine.lock:
+                    session = next((s for s in self.engine._sessions if s.id == context['assembly_session_id']), None)
+                    if session is None or session.doc.doc_type != 'assembly':
+                        raise ValueError('Selected assembly geometry context is no longer available')
+                    if self.engine._active_session_id != session.id:
+                        self.engine.activate_document(session.id)
+                    self.engine.selection = copy.deepcopy(context['selection'])
+        return self._dispatch(name, args)
+
     def _dispatch(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
         if name in self.assembly_extension_names:
             server = self.ipt_assembly
@@ -871,6 +922,7 @@ class PlanExecutor:
 
     def execute(self, plan: dict[str, Any], on_event=None, progress_span: tuple[int,int] = (25,90)) -> PlanResult:
         calls = self.validate_plan(plan)
+        geometry_context = self._capture_geometry_proxy_context()
         snap = self._snapshot()
         before = int(self.engine.revision)
         results: list[dict[str, Any]] = []
@@ -883,7 +935,7 @@ class PlanExecutor:
                 pct=start + int(span * (idx-1) / max(1,len(calls)))
                 self._emit_progress(on_event,f'Modeling… {idx}/{len(calls)}',pct)
                 runtime_args = self._resolve_runtime_refs(call['arguments'], results, bindings)
-                result = self._dispatch(call['tool'], runtime_args)
+                result = self._dispatch_with_geometry_context(call['tool'], runtime_args, geometry_context)
                 row={'tool': call['tool'], 'result': result}
                 bind=call.get('bind')
                 if bind:
@@ -911,6 +963,7 @@ class PlanExecutor:
         responsible for taking an outer snapshot if it needs all-or-nothing fallback.
         """
         calls = self.validate_plan(plan)
+        geometry_context = self._capture_geometry_proxy_context()
         before = int(self.engine.revision)
         results: list[dict[str, Any]] = []
         bindings: dict[str, dict[str, Any]] = {}
@@ -924,7 +977,7 @@ class PlanExecutor:
                 pct = start + int(span * (idx - 1) / max(1, len(calls)))
                 self._emit_progress(on_event, f'Modeling… {idx}/{len(calls)}', pct)
                 runtime_args = self._resolve_runtime_refs(call['arguments'], results, bindings)
-                result = self._dispatch(call['tool'], runtime_args)
+                result = self._dispatch_with_geometry_context(call['tool'], runtime_args, geometry_context)
                 row = {'tool': call['tool'], 'result': result}
                 bind = call.get('bind')
                 if bind:

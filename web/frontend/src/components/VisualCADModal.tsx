@@ -69,7 +69,6 @@ type Props = {
   onError: (reason: unknown) => void
   onComplete: () => void | Promise<void>
   onConnect: () => void
-  initialVisionMode?: 'standard' | 'opencv5'
 }
 
 type Job = {
@@ -105,11 +104,10 @@ const POLL_MS = 1300
 const POLL_RETRY_MAX_MS = 5000
 const POLL_DEADLINE_GRACE_MS = 60_000
 
-export default function VisualCADModal({ projectId, connected, selectedModel, effort, onClose, onError, onComplete, onConnect, initialVisionMode = 'standard' }: Props) {
+export default function VisualCADModal({ projectId, connected, selectedModel, effort, onClose, onError, onComplete, onConnect }: Props) {
   const [files, setFiles] = useState<Record<Slot, File | null>>({ primary: null, top: null, right: null, reference: null })
   const [notes, setNotes] = useState('')
   const [dimensionHint, setDimensionHint] = useState('')
-  const [visionMode, setVisionMode] = useState<'standard' | 'opencv5'>(initialVisionMode)
   const [job, setJob] = useState<Job | null>(null)
   const timer = useRef<number | null>(null)
   const previewRefreshed = useRef(false)
@@ -146,14 +144,6 @@ export default function VisualCADModal({ projectId, connected, selectedModel, ef
         if (!previewRefreshed.current) {
           previewRefreshed.current = true
           try { await onComplete() } catch {}
-        }
-        const inspectionStatus = next.result?.opencv_vision?.status
-        const inspectionPending = next.vision_mode === 'opencv5' && (inspectionStatus === 'queued' || inspectionStatus === 'running')
-        if (inspectionPending) {
-          // CAD is already complete. Keep polling only for the independent read-only
-          // inspection card; this does not keep the modeling UI busy.
-          timer.current = window.setTimeout(() => void poll(id), POLL_MS)
-          return
         }
         timer.current = null
         return
@@ -192,7 +182,6 @@ export default function VisualCADModal({ projectId, connected, selectedModel, ef
     form.append('dimension_hint', dimensionHint)
     form.append('model', selectedModel || 'gpt-5.6-sol')
     form.append('effort', effort || 'high')
-    form.append('vision_mode', visionMode)
     try {
       const created = await api<Job>(`/api/projects/${projectId}/visual-cad/drawing/jobs`, { method: 'POST', body: form })
       pollFailures.current = 0
@@ -225,15 +214,6 @@ export default function VisualCADModal({ projectId, connected, selectedModel, ef
         </header>
 
         {!connected && <div className="visual-cad-warning">ChatGPT / Codex must be connected for Phase 1. <button onClick={onConnect}>Connect AI</button></div>}
-
-        <div className="vision-mode-switch">
-          <button disabled={busy} className={visionMode === 'standard' ? 'active' : ''} onClick={() => setVisionMode('standard')}>
-            <Sparkles size={16} /><span><b>Standard CADia</b><small>Fast path · Codex → PartSpec → native CADia validation</small></span>
-          </button>
-          <button disabled={busy} className={visionMode === 'opencv5' ? 'active opencv' : 'opencv'} onClick={() => setVisionMode('opencv5')}>
-            <ScanLine size={16} /><span><b>OpenCV 5 Assist</b><small>Same fast path · failure-only rescue + async read-only inspection</small></span>
-          </button>
-        </div>
 
         <div className="visual-cad-grid">
           {(Object.keys(slotLabels) as Slot[]).map((slot) => (
@@ -271,7 +251,7 @@ export default function VisualCADModal({ projectId, connected, selectedModel, ef
         </div>}
 
         <footer>
-          <div className="visual-cad-footnote">{visionMode === 'opencv5' ? 'Successful jobs use the same CADia modeling path as Standard. OpenCV runs only after a failed/low-score route for one rescue attempt, then performs a read-only inspection after CAD completion. It never auto-edits a completed model.' : 'Fast product path: Codex interprets the drawing, CADia builds the editable B-Rep, and Drawing2CAD/CADia objective validators decide acceptance. NVIDIA review is preserved in source but off this critical path.'}</div>
+          <div className="visual-cad-footnote">Fast product path: Codex interprets the drawing, CADia builds the editable B-Rep, and Drawing2CAD/CADia objective validators decide acceptance. NVIDIA review is preserved in source but off this critical path.</div>
           <div className="visual-cad-actions">
             {busy ? <button className="secondary" onClick={cancel}>Cancel</button> : <button className="secondary" onClick={onClose}>{job?.status === 'done' ? 'Close' : 'Cancel'}</button>}
             {job?.status !== 'done' && <button className="primary" disabled={!canStart} onClick={start}><Sparkles size={16} />Reconstruct CAD</button>}

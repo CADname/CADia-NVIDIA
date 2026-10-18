@@ -14,11 +14,35 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .config import settings
-from .database import get_db
+from .database import SessionLocal, get_db
 from .models import User
 
 
 EMAIL_RE = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
+
+
+def _hackathon_lockdown_enabled() -> bool:
+    return os.getenv("CADIA_HACKATHON_LOCKDOWN", "false").lower() in {"1", "true", "yes", "on"}
+
+
+def _hackathon_judge_email() -> str:
+    return os.getenv("CADIA_HACKATHON_USER_EMAIL", "judge@cadia.local").strip().casefold() or "judge@cadia.local"
+
+
+def _assert_hackathon_judge(user: User) -> None:
+    if not _hackathon_lockdown_enabled():
+        return
+    email = str(user.email or "").casefold()
+    # Preserve the pre-existing administrator/judge account.
+    if email == _hackathon_judge_email():
+        return
+    # v3 allocates an isolated guest User for every successful judge sign-in.
+    # This exact, non-password-authenticatable account must be allowed through
+    # all standard authenticated routes, including WebSocket.
+    if (str(user.password_hash or "") == "guest$disabled"
+            and re.fullmatch(r"guest-[0-9a-f]{32}@cadia\.local", email)):
+        return
+    raise HTTPException(status_code=401, detail="Judge sign-in is required.")
 
 
 def normalize_email(value: str) -> str:
@@ -115,6 +139,7 @@ def get_current_user(
     user = db.get(User, decode_session(token))
     if user is None:
         raise HTTPException(status_code=401, detail="Sign-in is required.")
+    _assert_hackathon_judge(user)
     return user
 
 
@@ -125,7 +150,14 @@ def websocket_user_id(request_cookies: dict[str, str], authorization: str | None
     token = token or request_cookies.get(settings.session_cookie)
     if not token:
         raise HTTPException(status_code=401, detail="Sign-in is required.")
-    return decode_session(token)
+    user_id = decode_session(token)
+    if _hackathon_lockdown_enabled():
+        with SessionLocal() as db:
+            user = db.get(User, user_id)
+            if user is None:
+                raise HTTPException(status_code=401, detail="Sign-in is required.")
+            _assert_hackathon_judge(user)
+    return user_id
 
 
 CurrentUser = Annotated[User, Depends(get_current_user)]

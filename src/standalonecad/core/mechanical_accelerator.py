@@ -11,6 +11,9 @@ from typing import Any
 import math
 import cadquery as cq
 
+# CADIA_GENERAL_THREAD_DEFINITION_V1
+from .threading import ThreadApplication, ThreadDefinition, build_modeled_thread
+
 
 def _positive(name: str, value: float) -> float:
     v = float(value)
@@ -457,28 +460,11 @@ def flange_coupling(
 
 
 def _trapezoidal_external_thread(major_diameter_mm:float,pitch_mm:float,length_mm:float,starts:int=1,thread_angle_deg:float=30.0,right_handed:bool=True,z0:float=0.0):
-    d=_positive('major_diameter_mm',major_diameter_mm); p=_positive('pitch_mm',pitch_mm); L=_positive('length_mm',length_mm); starts=int(starts)
-    if starts<1 or starts>8:raise ValueError('starts must be between 1 and 8')
-    angle=float(thread_angle_deg)
-    if not (20.0<=angle<=60.0):raise ValueError('thread_angle_deg must be between 20 and 60')
-    depth=min(0.45*p,d*0.22); rmaj=d/2.0; rmin=rmaj-depth; lead=p*starts
-    root=cq.Solid.makeCylinder(rmin+0.02,L,(0,0,z0),(0,0,1)); ridges=[]
-    half_root=min(0.42*p,p*0.36); half_crest=max(0.06*p,half_root-depth*math.tan(math.radians(angle/2.0)))
-    half_crest=max(0.02*p,min(half_root*0.9,half_crest))
-    base_profile=(cq.Workplane('XZ',origin=(0,0,z0)).center(rmin,0).polyline([(-0.03,-half_root),(depth,-half_crest),(depth,half_crest),(-0.03,half_root)]).close().wire().val())
-    for i in range(starts):
-        helix=cq.Wire.makeHelix(lead,L,rmin,center=(0,0,z0),dir=(0,0,1),lefthand=not right_handed)
-        ridge=cq.Solid.sweep(base_profile,[],helix,makeSolid=True,isFrenet=True)
-        if i:ridge=ridge.rotate((0,0,0),(0,0,1),360.0*i/starts)
-        ridges.append(ridge)
-    result=root
-    for ridge in ridges:
-        try:result=cq.Workplane(obj=result).union(ridge).val()
-        except Exception:result=cq.Compound.makeCompound([result,ridge])
-    clip=cq.Solid.makeCylinder(rmaj+0.05,L,(0,0,z0),(0,0,1))
-    try:result=cq.Workplane(obj=result).intersect(clip).val()
-    except Exception:pass
-    return result,{'major_diameter_mm':d,'minor_diameter_mm':2*rmin,'pitch_mm':p,'lead_mm':lead,'starts':starts,'thread_angle_deg':angle,'length_mm':L}
+    """Backward-compatible wrapper over the general thread definition/application layer."""
+    definition=ThreadDefinition.trapezoidal(
+        major_diameter_mm,pitch_mm,starts,thread_angle_deg,right_handed,
+    )
+    return build_modeled_thread(ThreadApplication(definition,internal=False,length_mm=length_mm,z0_mm=z0))
 
 
 def lead_screw_nut(
@@ -492,26 +478,40 @@ def lead_screw_nut(
     clearance_mm:float=0.15,
     right_handed:bool=True,
 ):
-    """Generate an engaged trapezoidal lead screw and cylindrical nut as a compound."""
-    d=_positive('major_diameter_mm',major_diameter_mm); p=_positive('pitch_mm',pitch_mm); sl=_positive('screw_length_mm',screw_length_mm); nl=_positive('nut_length_mm',nut_length_mm)
+    """Generate a mating lead-screw/nut pair from one shared ThreadDefinition.
+
+    External and internal geometry consume the same profile definition.  Clearance is
+    an application property and therefore cannot silently change the included angle.
+    """
+    d=_positive('major_diameter_mm',major_diameter_mm); p=_positive('pitch_mm',pitch_mm)
+    sl=_positive('screw_length_mm',screw_length_mm); nl=_positive('nut_length_mm',nut_length_mm)
     if nl>=sl:raise ValueError('nut_length_mm must be smaller than screw_length_mm')
-    clear=_nonnegative('clearance_mm',clearance_mm); od=float(nut_outer_diameter_mm) if nut_outer_diameter_mm is not None else max(d*1.8,d+4*p)
+    clear=_nonnegative('clearance_mm',clearance_mm)
+    od=float(nut_outer_diameter_mm) if nut_outer_diameter_mm is not None else max(d*1.8,d+4*p)
     if od<=d+2*clear:raise ValueError('nut_outer_diameter_mm must exceed screw diameter plus clearance')
-    screw,meta=_trapezoidal_external_thread(d,p,sl,starts,thread_angle_deg,right_handed,0.0)
-    z=(sl-nl)/2.0; body=cq.Solid.makeCylinder(od/2.0,nl,(0,0,z),(0,0,1))
-    # Robust mating approximation: bore at minor diameter plus a helical groove based on the same lead.
-    depth=min(0.45*p,d*0.22); rmin=d/2.0-depth; lead=p*int(starts); core=cq.Solid.makeCylinder(rmin+clear,nl+0.2,(0,0,z-0.1),(0,0,1)); cutters=[core]
-    half_root=min(0.42*p,p*0.36); half_crest=max(0.02*p,half_root*0.35)
-    profile=(cq.Workplane('XZ',origin=(0,0,z)).center(rmin+clear,0).polyline([(-0.02,-half_root),(depth+clear,-half_crest),(depth+clear,half_crest),(-0.02,half_root)]).close().wire().val())
-    for i in range(int(starts)):
-        helix=cq.Wire.makeHelix(lead,nl,rmin+clear,center=(0,0,z),dir=(0,0,1),lefthand=not right_handed); groove=cq.Solid.sweep(profile,[],helix,makeSolid=True,isFrenet=True)
-        if i:groove=groove.rotate((0,0,0),(0,0,1),360.0*i/int(starts))
-        cutters.append(groove)
+
+    definition=ThreadDefinition.trapezoidal(d,p,int(starts),float(thread_angle_deg),bool(right_handed))
+    screw,screw_meta=build_modeled_thread(ThreadApplication(definition,internal=False,length_mm=sl,z0_mm=0.0))
+
+    z=(sl-nl)/2.0
+    body=cq.Solid.makeCylinder(od/2.0,nl,(0,0,z),(0,0,1))
+    cutter,internal_meta=build_modeled_thread(ThreadApplication(definition,internal=True,length_mm=nl,z0_mm=z,clearance_mm=clear))
     nut=body
-    for cutter in cutters:
-        for solid in cutter.Solids():nut=cq.Workplane(obj=nut).cut(solid).val()
+    for solid in cutter.Solids():
+        nut=cq.Workplane(obj=nut).cut(solid).val()
+
     shape=cq.Compound.makeCompound([screw,nut]); _validate_shape(shape,'Lead screw and nut generator')
-    return shape,{'generator':'lead_screw_nut','thread_form':'trapezoidal','nut_outer_diameter_mm':od,'nut_length_mm':nl,'clearance_mm':clear,'right_handed':bool(right_handed),**meta}
+    # Preserve the previous flattened metadata while exposing the canonical shared
+    # definition and both applications for verification/debugging.
+    return shape,{
+        'generator':'lead_screw_nut','thread_form':'trapezoidal',
+        'nut_outer_diameter_mm':od,'nut_length_mm':nl,'clearance_mm':clear,
+        'right_handed':bool(right_handed),
+        **screw_meta,
+        'thread_definition':definition.to_dict(),
+        'external_thread':screw_meta,
+        'internal_thread':internal_meta,
+    }
 
 
 def worm_gear_pair(module:float,wheel_teeth:int,wheel_width_mm:float,worm_length_mm:float,lead_angle_deg:float,thread_starts:int=1,bore_diameter_mm:float=0.0,pressure_angle_deg:float=20.0):

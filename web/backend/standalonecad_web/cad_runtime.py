@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import os
 import re
@@ -57,8 +58,15 @@ class CadRuntime:
         self.engine = CadEngine(self._changed)
         workspace = self.root / "workspace.json"
         if workspace.exists():
-            snapshot = json.loads(workspace.read_text(encoding="utf-8"))
+            original_workspace_text = workspace.read_text(encoding="utf-8")
+            snapshot = json.loads(original_workspace_text)
+            migrated = self._migrate_legacy_snapshot_paths(snapshot)
             self._validate_snapshot_paths(snapshot)
+            if migrated:
+                backup = self.root / f"workspace.legacy-paths-backup-{int(time.time())}.json"
+                backup.write_text(original_workspace_text, encoding="utf-8")
+                os.chmod(backup, 0o600)
+                self._write_workspace_snapshot(snapshot)
             self.engine._restore_workspace(snapshot, bump_revision=False)
         self.host = CadHost(self.engine)
         self.host.start()
@@ -71,19 +79,130 @@ class CadRuntime:
     def _changed(self) -> None:
         self._mesh_cache.clear()
 
+    def _write_workspace_snapshot(self, snapshot: dict[str, Any]) -> None:
+        target = self.root / "workspace.json"
+        temporary = self.root / f"workspace.{uuid.uuid4().hex}.tmp"
+        temporary.write_text(json.dumps(snapshot, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+        os.chmod(temporary, 0o600)
+        os.replace(temporary, target)
+
+    def _inside_project(self, raw: Any, base: Path) -> tuple[bool, Path]:
+        path = Path(str(raw)).expanduser()
+        if not path.is_absolute():
+            path = base / path
+        path = path.resolve()
+        root = self.root.resolve()
+        return (path == root or root in path.parents), path
+
+    def _legacy_placeholder_path(self, label: str, raw: Any) -> Path:
+        # Never read/copy an arbitrary external path. Old workspaces already embed
+        # B-Rep snapshots for recoverable top-level occurrences, so give those
+        # snapshots a stable project-local placeholder path.
+        digest = hashlib.sha256(str(raw).encode("utf-8", "replace")).hexdigest()[:12]
+        safe = _safe_name(label or Path(str(raw)).name or "component", "component")
+        return self.root / "documents" / "legacy-snapshot-components" / f"{safe}-{digest}.scad.json"
+
+    def _migrate_document_payload(self, document: dict[str, Any], base: Path) -> int:
+        changed = 0
+        import_source = document.get("import_source")
+        if import_source:
+            inside, _ = self._inside_project(import_source, base)
+            if not inside:
+                if document.get("imported_brep_b64"):
+                    document["import_source"] = None
+                    changed += 1
+                else:
+                    raise ValueError("Legacy CAD document references an external import without an embedded B-Rep snapshot.")
+
+        def migrate_rows(rows: dict[str, Any] | list[Any], top_level: bool) -> None:
+            nonlocal changed
+            iterable = rows.items() if isinstance(rows, dict) else enumerate(rows)
+            for key, row in iterable:
+                if not isinstance(row, dict):
+                    continue
+                raw = row.get("path")
+                if raw:
+                    inside, _ = self._inside_project(raw, base)
+                    if not inside:
+                        if top_level and not row.get("snapshot_brep_b64"):
+                            raise ValueError("Legacy assembly occurrence references an external component without an embedded B-Rep snapshot.")
+                        row["path"] = str(self._legacy_placeholder_path(str(row.get("name") or key), raw))
+                        changed += 1
+                children = row.get("children") or []
+                if isinstance(children, list):
+                    migrate_rows(children, False)
+
+        occurrences = document.get("occurrences") or {}
+        if isinstance(occurrences, dict):
+            migrate_rows(occurrences, True)
+        return changed
+
+    def _migrate_legacy_snapshot_paths(self, snapshot: dict[str, Any]) -> int:
+        changed = 0
+        sessions = snapshot.get("sessions") or []
+        if not isinstance(sessions, list):
+            return 0
+        for row in sessions:
+            if not isinstance(row, dict):
+                continue
+            current = row.get("doc") or {}
+            if isinstance(current, dict):
+                raw = current.get("_runtime_path")
+                if raw:
+                    inside, _ = self._inside_project(raw, self.root)
+                    if not inside:
+                        sid = str(row.get("id") or uuid.uuid4().hex)[:8]
+                        title = _safe_name(str(current.get("title") or "document"), "document")
+                        current["_runtime_path"] = str(self.root / "documents" / f"{title}-{sid}.scad.json")
+                        changed += 1
+                base = Path(str(current.get("_runtime_path"))).expanduser().resolve().parent if current.get("_runtime_path") else self.root
+                changed += self._migrate_document_payload(current, base)
+            for history_key in ("undo", "redo"):
+                history = row.get(history_key) or []
+                if not isinstance(history, list):
+                    continue
+                kept: list[dict[str, Any]] = []
+                for index, snap in enumerate(history):
+                    if not isinstance(snap, dict):
+                        changed += 1
+                        continue
+                    candidate = copy.deepcopy(snap)
+                    try:
+                        raw = candidate.get("_runtime_path")
+                        if raw:
+                            inside, _ = self._inside_project(raw, self.root)
+                            if not inside:
+                                sid = str(row.get("id") or uuid.uuid4().hex)[:8]
+                                title = _safe_name(str(candidate.get("title") or f"history-{index}"), "document")
+                                candidate["_runtime_path"] = str(self.root / "documents" / f"{title}-{sid}.scad.json")
+                                changed += 1
+                        base = Path(str(candidate.get("_runtime_path"))).expanduser().resolve().parent if candidate.get("_runtime_path") else self.root
+                        changed += self._migrate_document_payload(candidate, base)
+                    except ValueError:
+                        # Broken historical undo/redo frames must not make the current
+                        # project unloadable. Drop only that unrecoverable frame.
+                        changed += 1
+                        continue
+                    kept.append(candidate)
+                row[history_key] = kept
+        return changed
+
     def touch(self) -> None:
         self.last_access = time.monotonic()
 
     def _validate_snapshot_paths(self, snapshot: dict[str, Any]) -> None:
         for row in snapshot.get("sessions", []):
-            document = row.get("doc") or {}
-            raw = document.get("_runtime_path")
-            if raw:
-                document_path = self._ensure_project_path(raw, self.root)
-                base = document_path.parent
-            else:
-                base = self.root
-            self._validate_document_payload(document, base)
+            documents = [row.get("doc") or {}]
+            documents.extend(x for x in (row.get("undo") or []) if isinstance(x, dict))
+            documents.extend(x for x in (row.get("redo") or []) if isinstance(x, dict))
+            for document in documents:
+                raw = document.get("_runtime_path")
+                if raw:
+                    document_path = self._ensure_project_path(raw, self.root)
+                    base = document_path.parent
+                else:
+                    base = self.root
+                self._validate_document_payload(document, base)
 
     def _ensure_project_path(self, raw: Any, base: Path) -> Path:
         path = Path(str(raw)).expanduser()
@@ -118,11 +237,10 @@ class CadRuntime:
     def persist(self) -> None:
         with self.engine.lock:
             snapshot = copy.deepcopy(self.engine._workspace_snapshot())
-        target = self.root / "workspace.json"
-        temporary = self.root / f"workspace.{uuid.uuid4().hex}.tmp"
-        temporary.write_text(json.dumps(snapshot, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
-        os.chmod(temporary, 0o600)
-        os.replace(temporary, target)
+        # Legacy snapshots are migrated once at startup. Refuse to persist any new
+        # out-of-project reference so path corruption cannot silently return.
+        self._validate_snapshot_paths(snapshot)
+        self._write_workspace_snapshot(snapshot)
 
     def save_active_document(self) -> dict[str, Any]:
         with self.engine.lock:
@@ -156,7 +274,7 @@ class CadRuntime:
             )
         return self._mesh_cache[key]
 
-    def select(self, payload: dict[str, Any]) -> dict[str, Any]:
+    def select(self, payload: dict[str, Any], *, persist: bool = True) -> dict[str, Any]:
         with self.operation_lock, self.engine.lock:
             kind = payload.get("type")
             mode = str(payload.get("mode") or "replace").lower()
@@ -278,10 +396,11 @@ class CadRuntime:
                     raise ValueError("The active document is not a selectable part.")
                 selection = {"type": "part", "document_title": str(doc.title)}
             self.engine.selection = selection
-            self.persist()
+            if persist:
+                self.persist()
             return selection
 
-    def command(self, command: str, arguments: dict[str, Any] | None = None) -> dict[str, Any]:
+    def command(self, command: str, arguments: dict[str, Any] | None = None, *, persist: bool = True) -> dict[str, Any]:
         if command not in SAFE_COMMANDS:
             raise ValueError(f"Web command is not allowed: {command}")
         with self.operation_lock:
@@ -291,7 +410,8 @@ class CadRuntime:
                 result = self.engine.redo()
             else:
                 result = self.engine.execute(command, arguments or {})
-            self.persist()
+            if persist:
+                self.persist()
             return result
 
     def activate_document(self, document_id: str) -> dict[str, Any]:

@@ -6,22 +6,23 @@ import type { AccountInfo } from '../types'
 type DeviceLogin = { type: string; loginId: string; verificationUrl: string; userCode: string }
 type LoginStatus = { pending: boolean; success: boolean | null; error?: string | null }
 type ProviderId = 'codex' | 'codex_direct' | 'copilot' | 'nemotron' | 'openai' | 'anthropic' | 'gemini'
-type ProviderRow = { id: ProviderId; label: string; connected?: boolean; configured?: boolean; selected?: boolean; model?: string | null }
+type ProviderRow = { id: ProviderId; label: string; connected?: boolean; configured?: boolean; selected?: boolean; model?: string | null; serverProvided?: boolean }
 type ProviderList = { selected: ProviderId; autoFallback?: boolean; providers: ProviderRow[] }
 type Props = { account: AccountInfo | null; onAccount: (account: AccountInfo | null) => void; onClose: () => void }
+const myAIProviderIds: ProviderId[] = ['codex'] // CADIA_AI_HYBRID_ONLY_V443
 
 const providerInfo: Record<ProviderId, { label: string; caption: string; keyLabel?: string; placeholder?: string }> = {
-  codex: { label: 'ChatGPT / Codex', caption: 'Nemotron-assisted Codex · use your ChatGPT account and limits' },
+  codex: { label: 'ChatGPT / Codex', caption: 'Codex + Nemotron verification when configured · ChatGPT subscription' },
   codex_direct: { label: 'ChatGPT / Codex Direct', caption: 'Pure Codex planner/repair · Nemotron disabled · same ChatGPT login' },
   copilot: { label: 'GitHub Copilot', caption: 'Use your GitHub Copilot subscription · no API key required' },
   nemotron: { label: 'NVIDIA Nemotron', caption: 'Direct CAD agent via Nebius Token Factory · no Codex required' },
-  openai: { label: 'OpenAI API', caption: 'Use your OpenAI API key', keyLabel: 'OpenAI API key', placeholder: 'sk-...' },
+  openai: { label: 'OpenAI API', caption: 'Codex-compatible CAD planner + Nemotron when configured', keyLabel: 'OpenAI API key', placeholder: 'sk-...' },
   anthropic: { label: 'Claude', caption: 'Use your Anthropic API key', keyLabel: 'Anthropic API key', placeholder: 'sk-ant-...' },
   gemini: { label: 'Gemini', caption: 'Use your Gemini API key', keyLabel: 'Gemini API key', placeholder: 'AIza...' },
 }
 
 export default function AIConnectModal({ account, onAccount, onClose }: Props) {
-  const initial = (account?.provider as ProviderId) || 'codex'
+  const initial: ProviderId = 'codex'
   const [provider, setProvider] = useState<ProviderId>(initial)
   const [providerList, setProviderList] = useState<ProviderList | null>(null)
   const [device, setDevice] = useState<DeviceLogin | null>(null)
@@ -35,6 +36,9 @@ export default function AIConnectModal({ account, onAccount, onClose }: Props) {
   const connectedHere = Boolean(row?.connected || row?.configured)
   const selectedHere = providerList ? providerList.selected === provider : account?.provider === provider
   const info = providerInfo[provider]
+  const isServerOpenAI = provider === 'openai' && Boolean(row?.serverProvided)
+  const nemotronConfigured = Boolean(providerList?.providers.find((item) => item.id === 'nemotron')?.configured)
+  const visibleProviders: ProviderId[] = ['codex']
 
   async function refreshProviders() {
     const list = await api<ProviderList>('/api/ai/providers')
@@ -174,9 +178,9 @@ export default function AIConnectModal({ account, onAccount, onClose }: Props) {
   return <div className="modal-backdrop" onMouseDown={() => void closeModal()}>
     <div className="modal-card codex-modal ai-provider-modal" onMouseDown={(event) => event.stopPropagation()}>
       <button className="modal-close" onClick={() => void closeModal()}><X size={18}/></button>
-      <span className="connect-logo"><Sparkles/></span><p className="eyebrow">AI CONNECTION</p><h2>Choose an AI provider</h2>
-      <p className="muted">You can connect multiple AI providers, but each modeling request uses the selected provider. NVIDIA Nemotron can run as a direct CAD agent through Nebius Token Factory without Codex.</p>
-      <div className="provider-grid">{(Object.keys(providerInfo) as ProviderId[]).map((id) => {
+      <span className="connect-logo"><Sparkles/></span><p className="eyebrow">AI CONNECTION</p><h2>Connect ChatGPT / Codex + NVIDIA Nemotron</h2>
+      <p className="muted">Use ChatGPT / Codex for CAD planning and repair with NVIDIA Nemotron verification when the server is configured.</p>
+      <div className="provider-grid">{visibleProviders.map((id) => {
         const status=providerList?.providers.find((x)=>x.id===id); const connected=Boolean(status?.connected||status?.configured); const selected=providerList?.selected===id
         return <button key={id} className={`provider-card ${provider===id?'active':''}`} onClick={()=>setProvider(id)}><strong>{providerInfo[id].label}{selected?' · Active':''}</strong><small>{providerInfo[id].caption}{connected?' · Connected':''}</small></button>
       })}</div>
@@ -184,8 +188,9 @@ export default function AIConnectModal({ account, onAccount, onClose }: Props) {
         <div className="provider-title"><div><strong>{info.label}</strong><small>{info.caption}</small></div>{connectedHere&&<span className="provider-connected"><Check size={13}/> {selectedHere?'Active':'Connected'}</span>}</div>
         {connectedHere ? <>
           <div className="connected-account"><span><Check size={18}/></span><div><strong>{selectedHere ? (account?.account?.email || info.label) : info.label}</strong><small>{row?.model || (selectedHere ? account?.model : '') || 'Connected'}</small></div></div>
-          <p className="security-copy"><ShieldCheck size={16}/>{provider==='codex'?" This mode uses the existing Nemotron-assisted Codex path with this user's isolated ChatGPT authentication.":provider==='codex_direct'?" Codex Direct uses the same ChatGPT login but bypasses Nemotron entirely for planning and repair.":provider==='copilot'?" GitHub OAuth tokens are encrypted on the server and requests use the user's Copilot subscription.":provider==='nemotron'?" Nemotron runs directly through the server's Nebius Token Factory connection. The Nebius key never reaches the browser, and Codex is not used for Nemotron Direct requests.":' API keys are encrypted on the server and are not stored in the browser.'}</p>
-          <div className="modal-actions">{selectedHere&&provider!=='nemotron'&&<button className="secondary danger" onClick={disconnect} disabled={busy}><LogOut size={16}/> Disconnect</button>}{!selectedHere&&<button className="primary" onClick={selectExisting} disabled={busy}>Use this AI</button>}<button className="primary" onClick={onClose}>Done</button></div>
+          <p className="security-copy"><ShieldCheck size={16}/>{provider==='codex'?" This mode uses the existing Nemotron-assisted Codex path with this user's isolated ChatGPT authentication.":provider==='codex_direct'?" Codex Direct uses the same ChatGPT login but bypasses Nemotron entirely for planning and repair.":provider==='copilot'?" GitHub OAuth tokens are encrypted on the server and requests use the user's Copilot subscription.":provider==='nemotron'?" Nemotron runs directly through the server's Nebius Token Factory connection. The Nebius key never reaches the browser, and Codex is not used for Nemotron Direct requests.":isServerOpenAI?' CADia uses a server-owned OpenAI API key. No personal API key is needed.':' API keys are encrypted on the server and are not stored in the browser.'}</p>
+          {(provider === 'codex' || provider === 'openai') && <p className="security-copy"><ShieldCheck size={16}/>{nemotronConfigured ? ' Nemotron verification is configured. Codex-compatible CAD execution remains the source of truth.' : ' Nemotron is not configured. CAD will use its main planner until the server has a NEBIUS_API_KEY.'}</p>}
+          <div className="modal-actions">{selectedHere&&provider!=='nemotron'&&!isServerOpenAI&&<button className="secondary danger" onClick={disconnect} disabled={busy}><LogOut size={16}/> Disconnect</button>}{!selectedHere&&<button className="primary" onClick={selectExisting} disabled={busy}>Use this AI</button>}<button className="primary" onClick={onClose}>Done</button></div>
         </> : (provider==='codex' || provider==='codex_direct') ? device ? <>
           <p className="muted">Enter this code on the OpenAI authorization page that just opened.</p><button className="device-code" onClick={copyCode}><strong>{device.userCode}</strong>{copied?<Check size={17}/>:<Clipboard size={17}/>}</button><a className="verification-link" href={device.verificationUrl} target="_blank" rel="noreferrer">Open authorization page again <ExternalLink size={15}/></a><div className="waiting-line"><span className="spinner"/> Waiting for sign-in to complete…</div>
         </> : <>{error&&<div className="form-error">{error}</div>}<button className="primary wide" onClick={connectCodex} disabled={busy}>{busy?'Preparing connection…':provider==='codex_direct'?'Connect ChatGPT / Codex Direct':'Connect ChatGPT / Codex'} <ExternalLink size={16}/></button></>
@@ -196,3 +201,4 @@ export default function AIConnectModal({ account, onAccount, onClose }: Props) {
     </div>
   </div>
 }
+

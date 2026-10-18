@@ -11,6 +11,28 @@ MODERN = "2026-07-28"
 LEGACY = "2025-11-25"
 
 
+_READ_ONLY_TOOL_SUFFIXES = {
+    "list_available_targets",
+    "get_current_target",
+    "health",
+    "list_open_documents",
+    "get_document_info",
+    "list_parameters",
+    "get_parameter",
+    "get_iproperty",
+    "get_mass_properties",
+    "list_interfaces",
+    "check_interference",
+    "measure_min_distance",
+    "get_assembly_bom",
+    "list_constraints",
+    "list_baked_tools",
+    "list_bake_suggestions",
+}
+_READ_ONLY_TOOL_NAMES = {f"{prefix}_{suffix}" for prefix in ("inventor", "cad") for suffix in _READ_ONLY_TOOL_SUFFIXES}
+_READ_ONLY_TOOL_NAMES.update({"cad_get_topology", "cad_get_selection"})
+
+
 class ProjectMcpGateway:
     """Project-scoped MCP JSON-RPC facade over the exact desktop tool surface.
 
@@ -34,6 +56,22 @@ class ProjectMcpGateway:
         if data is not None:
             payload["data"] = data
         return {"jsonrpc": "2.0", "id": rid, "error": payload}
+
+    @staticmethod
+    def request_mutates(request: dict[str, Any]) -> bool:
+        """Return True only for MCP requests that can change project/model state.
+
+        Protocol discovery, ping/list calls, and an explicit conservative set of
+        query-only CAD tools remain available while an isolated model worker runs.
+        Unknown tools are treated as mutating by default.
+        """
+        if str(request.get("method") or "") != "tools/call":
+            return False
+        params = request.get("params") or {}
+        if not isinstance(params, dict):
+            return True
+        name = str(params.get("name") or "")
+        return name not in _READ_ONLY_TOOL_NAMES
 
     def dispatch(self, request: dict[str, Any]) -> dict[str, Any] | None:
         rid = request.get("id")
@@ -72,7 +110,8 @@ class ProjectMcpGateway:
             try:
                 with self.runtime.operation_lock:
                     result = self.runtime.executor._dispatch(name, arguments)
-                    self.runtime.persist()
+                    if name not in _READ_ONLY_TOOL_NAMES:
+                        self.runtime.persist()
                 return self.ok(rid, {
                     "resultType": "complete",
                     "content": [{"type": "text", "text": __import__("json").dumps(result, ensure_ascii=False, separators=(",", ":"))}],

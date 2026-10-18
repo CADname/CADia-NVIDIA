@@ -185,12 +185,160 @@ def _ref_semantics(ref):
     return vals
 
 
+
+
+def _bbox_overlap_possible(a, b, tol=1e-7):
+    """Cheap, geometry-agnostic rejection for subshapes that cannot overlap."""
+    try:
+        aa=a.BoundingBox(); bb=b.BoundingBox()
+        return not (
+            aa.xmax < bb.xmin-tol or bb.xmax < aa.xmin-tol or
+            aa.ymax < bb.ymin-tol or bb.ymax < aa.ymin-tol or
+            aa.zmax < bb.zmin-tol or bb.zmax < aa.zmin-tol
+        )
+    except Exception:
+        return True
+
+
+def _subshape_measure(item, kind):
+    try:
+        return max(0.0, float(item.Area() if kind == 'face' else item.Length()))
+    except Exception:
+        return 0.0
+
+
+def _positive_overlap(a, b, kind):
+    """Return same-dimensional geometric overlap between two subshapes.
+
+    This deliberately contains no feature-name or geometry-type special cases.
+    Face lineage is propagated only through shared *area* and edge lineage only
+    through shared *length*, so mere touching at an edge/vertex does not create
+    ancestry.  Exact OCCT identity is handled before this function is called.
+    """
+    if not _bbox_overlap_possible(a, b):
+        return 0.0
+    try:
+        import cadquery as cq
+        from OCP.BRepAlgoAPI import BRepAlgoAPI_Common
+        result=BRepAlgoAPI_Common(a.wrapped,b.wrapped).Shape()
+        common=cq.Shape.cast(result)
+        if common is None or common.isNull():
+            return 0.0
+        value=float(common.Area() if kind == 'face' else common.Length())
+        if not math.isfinite(value):
+            return 0.0
+        return max(0.0,value)
+    except Exception:
+        return 0.0
+
+
+def _feature_tag(name, kind):
+    return (str(name), str(kind))
+
+
+def _lineage_owners(shape, kind):
+    """Build generic feature ancestry for final faces/edges from stage snapshots.
+
+    The algorithm is feature-agnostic: across each adjacent feature stage it
+    first preserves exact OCCT subshape identity, then propagates ancestry across
+    same-dimensional geometric overlap.  New topology that has no predecessor
+    is assigned to the feature that introduced it.  Splits naturally become
+    one-to-many, and merges carry the union of predecessor owners.
+
+    This is intentionally a runtime reference layer; it does not alter B-Rep
+    geometry or replace OCCT/CadQuery modeling operations.
+    """
+    stages=getattr(shape,'_cadia_feature_stages',None)
+    if not stages:
+        return None
+    cache_name='_cadia_generic_lineage_'+kind
+    cached=getattr(shape,cache_name,None)
+    if cached is not None:
+        return cached
+    # General performance guard.  If lineage would require an excessive pairwise
+    # history walk, retain the pre-existing geometric matcher instead of changing
+    # modeling behavior or introducing feature-specific shortcuts.
+    if len(stages)>160:
+        return None
+    getter=(lambda sh:list(sh.Faces())) if kind=='face' else (lambda sh:list(sh.Edges()))
+    prev_shapes=[]; prev_owners=[]; current_owners=[]
+    for feature_name, feature_kind, stage in stages:
+        if stage is None:
+            prev_shapes=[]; prev_owners=[]; current_owners=[]
+            continue
+        cur_shapes=getter(stage)
+        if len(cur_shapes)>2200:
+            return None
+        tag=frozenset((_feature_tag(feature_name,feature_kind),))
+        if not prev_shapes:
+            current_owners=[tag for _ in cur_shapes]
+            prev_shapes=cur_shapes; prev_owners=current_owners
+            continue
+        current_owners=[None]*len(cur_shapes)
+        # First preserve exact OCCT identity.  This is both fastest and strongest.
+        for j,new_item in enumerate(cur_shapes):
+            for i,old_item in enumerate(prev_shapes):
+                try:same=bool(old_item.isSame(new_item))
+                except Exception:same=False
+                if same:
+                    current_owners[j]=prev_owners[i]
+                    break
+        # Then propagate ancestry through genuine same-dimensional overlap.
+        # A relative epsilon suppresses numerical slivers from boolean tolerances.
+        for j,new_item in enumerate(cur_shapes):
+            if current_owners[j] is not None:
+                continue
+            new_measure=_subshape_measure(new_item,kind)
+            ancestors=set()
+            for i,old_item in enumerate(prev_shapes):
+                old_measure=_subshape_measure(old_item,kind)
+                scale=max(1.0,min(x for x in (new_measure,old_measure) if x>0) if (new_measure>0 and old_measure>0) else 1.0)
+                overlap=_positive_overlap(old_item,new_item,kind)
+                if overlap>max(1e-8,scale*1e-7):
+                    ancestors.update(prev_owners[i])
+            current_owners[j]=frozenset(ancestors) if ancestors else tag
+        prev_shapes=cur_shapes; prev_owners=current_owners
+    if not stages or stages[-1][2] is not shape:
+        return None
+    try:setattr(shape,cache_name,current_owners)
+    except Exception:pass
+    return current_owners
+
+
+def _lineage_payload(shape, kind, index):
+    owners=_lineage_owners(shape,kind)
+    if owners is None or index<0 or index>=len(owners) or not owners[index]:
+        return None
+    return [{'feature_name':name,'feature_kind':ftype} for name,ftype in sorted(owners[index])]
+
+
+def _lineage_allowed(shape, kind, ref):
+    """Return indices carrying any persisted ancestor, or None for legacy refs."""
+    if not isinstance(ref,dict) or not ref.get('lineage_owners'):
+        return None
+    expected={_feature_tag(x.get('feature_name'),x.get('feature_kind')) for x in ref.get('lineage_owners',[]) if isinstance(x,dict)}
+    if not expected:
+        return None
+    owners=_lineage_owners(shape,kind)
+    if owners is None:
+        # Do not change behavior for environments where runtime ancestry cannot be
+        # computed.  The legacy matcher remains available for old/imported models.
+        return None
+    allowed={i for i,tags in enumerate(owners) if tags and expected.intersection(tags)}
+    if not allowed:
+        raise ValueError('Referenced topology lineage no longer exists; reselect the topology')
+    return allowed
+
 def make_face_ref(shape, ref):
     """Capture a persistent descriptor for a current face id/semantic/selector."""
     face=match_face(shape,ref)
     idx=_topology_index(shape)
     for r,f in zip(face_records(shape),idx['faces']):
-        if f.isSame(face): return {k:r.get(k) for k in ('id','semantic','semantics','geom','direction','center','center_norm','area','normal','radius_mm','axis_direction','edge_count','edge_geom_signature') if r.get(k) is not None}
+        if f.isSame(face):
+            out={k:r.get(k) for k in ('id','semantic','semantics','geom','direction','center','center_norm','area','normal','radius_mm','axis_direction','edge_count','edge_geom_signature') if r.get(k) is not None}
+            lineage=_lineage_payload(shape,'face',r['index'])
+            if lineage: out['lineage_owners']=lineage
+            return out
     raise ValueError(f'Face reference not found: {ref}')
 
 
@@ -198,7 +346,11 @@ def make_edge_ref(shape, ref):
     edge=match_edge(shape,ref)
     idx=_topology_index(shape)
     for r,e in zip(edge_records(shape),idx['edges']):
-        if e.isSame(edge): return {k:r.get(k) for k in ('id','geom','direction','center','center_norm','length','vertices','radius_mm','adjacent_face_geoms','adjacent_face_count') if r.get(k) is not None}
+        if e.isSame(edge):
+            out={k:r.get(k) for k in ('id','geom','direction','center','center_norm','length','vertices','radius_mm','adjacent_face_geoms','adjacent_face_count') if r.get(k) is not None}
+            lineage=_lineage_payload(shape,'edge',r['index'])
+            if lineage: out['lineage_owners']=lineage
+            return out
     raise ValueError(f'Edge reference not found: {ref}')
 
 
@@ -224,19 +376,22 @@ def match_face(shape,ref):
     # 1. Exact hash or semantic aliases.
     rid=ref.get('id') if isinstance(ref,dict) else ref
     sems=_ref_semantics(ref)
-    for r,f in zip(records,faces):
+    allowed=_lineage_allowed(shape,'face',ref)
+    for i,(r,f) in enumerate(zip(records,faces)):
+        if allowed is not None and i not in allowed: continue
         if r['id']==rid or any(x==r.get('semantic') or x in (r.get('semantics') or []) for x in sems): return f
     if not isinstance(ref,dict): raise ValueError(f'Face reference not found: {ref}')
     # 2. Persistent-topology fallback.  Match topology class/orientation first, then
     # choose the closest relative bbox location.  Absolute dimensions are only a weak tie-breaker.
     candidates=[]
-    for r,f in zip(records,faces):
+    for i,(r,f) in enumerate(zip(records,faces)):
+        if allowed is not None and i not in allowed: continue
         if ref.get('geom') and r.get('geom')!=ref.get('geom'): continue
         if ref.get('direction') and r.get('direction')!=ref.get('direction'): continue
         if ref.get('axis_direction') and r.get('axis_direction')!=ref.get('axis_direction'): continue
         if ref.get('radius_mm') is not None and r.get('radius_mm') is not None:
             rr=float(ref['radius_mm']); tol=max(0.05,abs(rr)*0.08)
-            if abs(float(r['radius_mm'])-rr)>tol: continue
+            if allowed is None and abs(float(r['radius_mm'])-rr)>tol: continue
         if ref.get('edge_count') is not None and r.get('edge_count')!=ref.get('edge_count'):continue
         if ref.get('edge_geom_signature') and r.get('edge_geom_signature')!=ref.get('edge_geom_signature'):continue
         score=0.0
@@ -246,6 +401,8 @@ def match_face(shape,ref):
             a=np.asarray(r.get('normal',[0,0,0]),float); b=np.asarray(ref['normal'],float)
             if np.linalg.norm(a)>0 and np.linalg.norm(b)>0: score += (1.0-abs(float(np.dot(a/np.linalg.norm(a),b/np.linalg.norm(b)))))*10.0
         if ref.get('area') not in (None,0): score += abs(math.log(max(float(r.get('area',1e-12)),1e-12)/max(float(ref['area']),1e-12)))
+        if allowed is not None and ref.get('radius_mm') not in (None,0) and r.get('radius_mm') not in (None,0):
+            score += abs(math.log(max(float(r['radius_mm']),1e-12)/max(float(ref['radius_mm']),1e-12)))
         candidates.append((score,r,f))
     if not candidates: raise ValueError(f'Face reference could not be rebound after topology update: {ref}')
     candidates.sort(key=lambda x:x[0])
@@ -257,22 +414,27 @@ def match_face(shape,ref):
 def match_edge(shape,ref):
     records=edge_records(shape); edges=_topology_index(shape)['edges']
     rid=ref.get('id') if isinstance(ref,dict) else ref
-    for r,e in zip(records,edges):
+    allowed=_lineage_allowed(shape,'edge',ref)
+    for i,(r,e) in enumerate(zip(records,edges)):
+        if allowed is not None and i not in allowed: continue
         if r['id']==rid:return e
     if not isinstance(ref,dict): raise ValueError(f'Edge reference not found: {ref}')
     candidates=[]
-    for r,e in zip(records,edges):
+    for i,(r,e) in enumerate(zip(records,edges)):
+        if allowed is not None and i not in allowed: continue
         if ref.get('geom') and r.get('geom')!=ref.get('geom'): continue
         if ref.get('direction') and r.get('direction')!=ref.get('direction'): continue
         if ref.get('radius_mm') is not None and r.get('radius_mm') is not None:
             rr=float(ref['radius_mm']); tol=max(0.05,abs(rr)*0.08)
-            if abs(float(r['radius_mm'])-rr)>tol: continue
+            if allowed is None and abs(float(r['radius_mm'])-rr)>tol: continue
         if ref.get('adjacent_face_count') is not None and r.get('adjacent_face_count')!=ref.get('adjacent_face_count'):continue
         if ref.get('adjacent_face_geoms') and r.get('adjacent_face_geoms')!=ref.get('adjacent_face_geoms'):continue
         score=0.0
         if ref.get('center_norm') is not None:
             score += float(np.linalg.norm(np.asarray(r.get('center_norm',[0,0,0]),float)-np.asarray(ref['center_norm'],float)))*20.0
         if ref.get('length') not in (None,0): score += abs(math.log(max(float(r.get('length',1e-12)),1e-12)/max(float(ref['length']),1e-12)))
+        if allowed is not None and ref.get('radius_mm') not in (None,0) and r.get('radius_mm') not in (None,0):
+            score += abs(math.log(max(float(r['radius_mm']),1e-12)/max(float(ref['radius_mm']),1e-12)))
         candidates.append((score,r,e))
     if not candidates: raise ValueError(f'Edge reference could not be rebound after topology update: {ref}')
     candidates.sort(key=lambda x:x[0])
@@ -319,7 +481,7 @@ def select_face(shape,spec):
     if isinstance(spec,str): return match_face(shape,spec)
     if not isinstance(spec,dict): raise ValueError('Face selector must be an object')
     # Descriptor refs from persisted feature history take precedence over selector dictionaries.
-    if spec.get('id') or spec.get('semantic') or spec.get('semantics'):
+    if spec.get('id') or spec.get('lineage_owners') or spec.get('semantic') or spec.get('semantics'):
         try:return match_face(shape,spec)
         except ValueError: pass
     kind=str(spec.get('kind','planar')).lower(); records=face_records(shape); faces=_topology_index(shape)['faces']; candidates=[]

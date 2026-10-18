@@ -184,11 +184,24 @@ class CadEngine:
 
     @staticmethod
     def _document_from_snapshot(snap):
-        fd,tmp=tempfile.mkstemp(prefix='standalonecad-restore-',suffix='.scad.json')
+        # Restore relative component/import paths against the document's real runtime
+        # directory. Using the system /tmp directory here can rewrite otherwise-valid
+        # assembly references into /tmp on every workspace restart.
+        runtime_path=snap.get('_runtime_path')
+        restore_dir=None
+        if runtime_path:
+            try:
+                rp=Path(str(runtime_path)).expanduser()
+                if rp.is_absolute():
+                    rp.parent.mkdir(parents=True,exist_ok=True)
+                    restore_dir=str(rp.parent)
+            except Exception:
+                restore_dir=None
+        fd,tmp=tempfile.mkstemp(prefix='.standalonecad-restore-',suffix='.scad.json',dir=restore_dir)
         __import__('os').close(fd); p=Path(tmp); d=CadDocument()
         try:
             payload={k:v for k,v in snap.items() if k!='_runtime_path'}
-            p.write_text(json.dumps(payload),encoding='utf-8'); d.load(p); d.path=snap.get('_runtime_path'); d.dirty=bool(snap.get('_runtime_dirty',False)); return d
+            p.write_text(json.dumps(payload),encoding='utf-8'); d.load(p); d.path=runtime_path; d.dirty=bool(snap.get('_runtime_dirty',False)); return d
         finally:
             try:p.unlink(missing_ok=True)
             except Exception:pass
@@ -331,6 +344,87 @@ class CadEngine:
             solve_constraints(sm,self.doc.value)
         return ok
 
+    @staticmethod
+    def _selection_topology_items(selection):
+        if not isinstance(selection,dict):return []
+        rows=selection.get('items') if isinstance(selection.get('items'),list) else [selection]
+        out=[]
+        for row in rows:
+            if not isinstance(row,dict):continue
+            typ=str(row.get('type') or selection.get('type') or '').lower()
+            key='edge_ref' if typ=='edge' else ('face_ref' if typ=='face' else None)
+            ref=row.get(key) if key else None
+            occ=row.get('occurrence_name') or selection.get('occurrence_name')
+            if key and ref is not None and occ:
+                out.append({'type':typ,'occurrence_name':str(occ),key:copy.deepcopy(ref)})
+        return out
+
+    @staticmethod
+    def _value_contains_ref(value, ref):
+        rid=ref.get('id') if isinstance(ref,dict) else ref
+        if isinstance(value,str):return str(value)==str(rid)
+        if isinstance(value,dict):
+            if value.get('id') is not None and str(value.get('id'))==str(rid):return True
+            return any(CadEngine._value_contains_ref(v,ref) for v in value.values())
+        if isinstance(value,(list,tuple)):
+            return any(CadEngine._value_contains_ref(v,ref) for v in value)
+        return False
+
+    @staticmethod
+    def _replace_refs(value, replacements):
+        if isinstance(value,str):
+            for src,dst in replacements:
+                rid=src.get('id') if isinstance(src,dict) else src
+                if str(value)==str(rid):return copy.deepcopy(dst)
+            return value
+        if isinstance(value,list):return [CadEngine._replace_refs(v,replacements) for v in value]
+        if isinstance(value,tuple):return tuple(CadEngine._replace_refs(v,replacements) for v in value)
+        if isinstance(value,dict):
+            for src,dst in replacements:
+                rid=src.get('id') if isinstance(src,dict) else src
+                if value.get('id') is not None and str(value.get('id'))==str(rid):return copy.deepcopy(dst)
+            return {k:CadEngine._replace_refs(v,replacements) for k,v in value.items()}
+        return copy.deepcopy(value)
+
+    def _assembly_geometry_context_result(self, command, params):
+        """Route explicit occurrence topology through Inventor-style GeometryProxy context.
+
+        Routing is driven solely by whether the command arguments consume an exact
+        viewport-selected topology reference.  There is deliberately no list of feature
+        names here: any existing Part command can participate if it already accepts the
+        selected Face/Edge reference.
+        """
+        d=self.doc
+        if d is None or d.doc_type!='assembly':return None
+        items=self._selection_topology_items(self.selection)
+        if not items:return None
+        matched=[]
+        for item in items:
+            key='edge_ref' if item['type']=='edge' else 'face_ref'
+            if self._value_contains_ref(params,item[key]):matched.append(item)
+        if not matched:return None
+        occurrences={x['occurrence_name'] for x in matched}
+        if len(occurrences)!=1:
+            raise ValueError('One CAD command cannot implicitly edit topology from multiple occurrences; execute one occurrence context per call')
+        occurrence_name=next(iter(occurrences))
+        replacements=[]; local_items=[]
+        for item in matched:
+            proxy=d.reference_manager.create_geometry_proxy_from_selection(item)
+            entity=proxy.native_object
+            native_ref=copy.deepcopy(entity.get('native_ref')) if isinstance(entity,dict) else copy.deepcopy(entity)
+            key='edge_ref' if item['type']=='edge' else 'face_ref'
+            replacements.append((item[key],native_ref))
+            local_items.append({'type':item['type'],key:copy.deepcopy(native_ref)})
+        local_params=self._replace_refs(params,replacements)
+        local_selection={}
+        if local_items:
+            local_selection=copy.deepcopy(local_items[0]); local_selection['items']=copy.deepcopy(local_items); local_selection['count']=len(local_items)
+            if local_items[0]['type']=='edge':local_selection['edge_refs']=[copy.deepcopy(x['edge_ref']) for x in local_items]
+            if local_items[0]['type']=='face':local_selection['face_refs']=[copy.deepcopy(x['face_ref']) for x in local_items]
+        rec=d.add_assembly_context_command(command,occurrence_name,local_params,local_selection)
+        self._changed()
+        return {'ok':True,'feature_name':rec.name,'occurrence_name':occurrence_name,'assembly_context':True}
+
     def execute(self,command:str,p:dict[str,Any] | None,read_only=False):
         """Execute one atomic CAD operation across the whole open-document workspace."""
         params=copy.deepcopy(p or {})
@@ -342,10 +436,12 @@ class CadEngine:
             pre_workspace=self._workspace_snapshot() if tracked else None
             pre_doc=self._snapshot() if tracked else None
             try:
-                if command in UPSTREAM_HOST_COMMANDS:
-                    result=self.inventor.dispatch(command,params,read_only=read_only)
-                else:
-                    result=self.canonical.dispatch(CanonicalOperation(command,params,source='native'),read_only=read_only)
+                result=self._assembly_geometry_context_result(command,params) if write else None
+                if result is None:
+                    if command in UPSTREAM_HOST_COMMANDS:
+                        result=self.inventor.dispatch(command,params,read_only=read_only)
+                    else:
+                        result=self.canonical.dispatch(CanonicalOperation(command,params,source='native'),read_only=read_only)
                 verify_after_command(self,command)
                 if write and command not in dirty_excluded and self.doc is not None:self.doc.dirty=True
                 if write:self._sync_open_assembly_occurrences()
@@ -603,12 +699,10 @@ class CadEngine:
                 if isinstance(q.get('angle_deg'),(int,float)):q['angle_deg']=d.create_model_parameter(q['angle_deg'],'deg')
                 rec=d.add_feature('revolve',None,q,q.get('operation','join')); self._changed(); return {'ok':True,'feature_name':rec.name}
             if command in ('fillet','chamfer'):
-                q=dict(p)
-                # Capture persistent edge descriptors so history survives upstream dimension edits.
-                raw=q.get('edge_ids') or []
+                q=dict(p); raw=q.get('edge_ids') or []
+                key='radius_mm' if command=='fillet' else 'distance_mm'
                 if raw and d.shape is not None:
                     q['edge_refs']=[make_edge_ref(d.shape,x) for x in raw]
-                key='radius_mm' if command=='fillet' else 'distance_mm'
                 if isinstance(q.get(key),(int,float)):q[key]=d.create_model_parameter(q[key],'mm')
                 rec=d.add_feature(command,None,q,'join'); self._changed(); return {'ok':True,'feature_name':rec.name}
             if command=='create_work_plane':

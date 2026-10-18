@@ -1,6 +1,6 @@
 import { ChangeEvent, useCallback, useEffect, useRef, useState } from 'react'
 import {
-  Box, Camera, ChevronDown, Cloud, Download, Factory, FolderOpen, Grid3X3,
+  Box, Camera, ChevronDown, Cloud, Download, Factory, FolderOpen, Grid3X3, MapPin,
   Layers3, LogOut, Maximize2, Moon, MousePointer2, Redo2, Save, ScanLine, Scissors,
   SquareMousePointer, Sun, Undo2, Upload, View, Waypoints, Workflow, X,
 } from 'lucide-react'
@@ -12,9 +12,9 @@ import ChatPanel from './ChatPanel'
 import AIConnectModal from './AIConnectModal'
 import FeatureTree from './FeatureTree'
 import ManufacturingPanel from './ManufacturingPanel'
+import SupplierFinderPanel from './SupplierFinderPanel'
 import VisualCADModal from './VisualCADModal'
 import PhotoCADModal from './PhotoCADModal'
-import OpenCVVisionLauncher from './OpenCVVisionLauncher'
 
 type Props = { user: User; onLogout: () => void }
 type Progress = { message: string; percent: number }
@@ -52,7 +52,7 @@ function translateCoreMessage(raw: unknown, kind: VisibleMessageKind = 'progress
   // Keep the original CAD core untouched; only sanitize its presentation at the web boundary.
   if (/[\uAC00-\uD7A3]/.test(text)) {
     if (kind === 'progress') return 'Processing CAD operation…'
-    if (kind === 'result') return 'CAD operation completed.'
+    if (kind === 'result') return text
     return 'CAD operation failed. Check the server logs for details.'
   }
   return text
@@ -69,6 +69,8 @@ export default function CadWorkspace({ user, onLogout }: Props) {
   const [state, setState] = useState<CadState | null>(null)
   const [mesh, setMesh] = useState<CadMesh | null>(null)
   const [messages, setMessages] = useState<ChatMessage[]>([])
+  // CADIA_CONVERSATIONAL_UI_V1
+  const [quickReplies, setQuickReplies] = useState<string[]>([])
   const [busy, setBusy] = useState(false)
   const [progress, setProgress] = useState<Progress | null>(null)
   const [error, setError] = useState('')
@@ -78,11 +80,9 @@ export default function CadWorkspace({ user, onLogout }: Props) {
   const [effort, setEffort] = useState('medium')
   const [showConnect, setShowConnect] = useState(false)
   const [showManufacturing, setShowManufacturing] = useState(false)
+  const [showSupplierFinder, setShowSupplierFinder] = useState(false)
   const [showVisualCAD, setShowVisualCAD] = useState(false)
   const [showPhotoCAD, setShowPhotoCAD] = useState(false)
-  const [showOpenCVVision, setShowOpenCVVision] = useState(false)
-  const [visualCADMode, setVisualCADMode] = useState<'standard' | 'opencv5'>('standard')
-  const [photoCADMode, setPhotoCADMode] = useState<'standard' | 'opencv5'>('standard')
   const [assets, setAssets] = useState<Asset3D[]>([])
   const [selectedAssetId, setSelectedAssetId] = useState<string | null>(null)
   const [selectionMode, setSelectionMode] = useState<'face' | 'edge' | 'object'>('face')
@@ -201,8 +201,11 @@ export default function CadWorkspace({ user, onLogout }: Props) {
       api<CadMesh>(`/api/projects/${projectId}/cad/mesh?edges=true`),
       api<ChatMessage[]>(`/api/projects/${projectId}/messages`),
       api<Asset3D[]>(`/api/projects/${projectId}/assets`),
-    ]).then(([projectValue, stateValue, meshValue, history, assetRows]) => {
+      api<{ status: string; pendingQuestion: string | null; options: string[] }>(`/api/ai/projects/${projectId}/conversation-state`),
+    ]).then(([projectValue, stateValue, meshValue, history, assetRows, conversationState]) => {
+      // CADIA_TALKCAD_PENDING_UI_V1: restore waiting-user options after refresh/reconnect.
       setProject(projectValue); setState(stateValue); setMesh(meshValue); setMessages(history); setAssets(assetRows)
+      setQuickReplies(conversationState.status === 'waiting_user' && Array.isArray(conversationState.options) ? conversationState.options.slice(0, 6) : [])
       setOrientation(stateValue.document?.view_orientation || 'iso_top_right')
     }).catch(showError)
     void loadAccount()
@@ -248,6 +251,7 @@ export default function CadWorkspace({ user, onLogout }: Props) {
         if (message.type === 'result') {
           if (message.payload?.state) setState(message.payload.state)
           setMessages((current) => [...current, { role: 'assistant', content: translateCoreMessage(message.payload?.message || 'Operation completed.', 'result') }])
+          setQuickReplies(message.payload?.interaction?.type === 'clarify' && Array.isArray(message.payload?.interaction?.options) ? message.payload.interaction.options.slice(0, 6) : [])
         }
         if (message.type === 'error') {
           const text = translateCoreMessage(message.payload || 'Unknown error', 'error')
@@ -334,7 +338,9 @@ export default function CadWorkspace({ user, onLogout }: Props) {
     await loadMesh()
   }
 
+
   function sendPrompt(prompt: string) {
+    setQuickReplies([])
     if (!(account?.connected || account?.account)) { setShowConnect(true); return }
     const socket = socketRef.current
     if (!socket || socket.readyState !== WebSocket.OPEN) { showError('The live CAD connection is offline. Please try again in a moment.'); return }
@@ -383,21 +389,22 @@ export default function CadWorkspace({ user, onLogout }: Props) {
           : state?.selection.feature_name || state?.selection.occurrence_name
   )
   const volume = mesh?.stats.volume_mm3 || 0
+  const activeAIName = account?.providerLabel || account?.account?.planType || 'AI'
 
   return (
     <main className={`cad-app ${theme}`}>
       <header className="cad-topbar">
         <button className="brand-lockup compact" onClick={() => navigate('/')}><span className="brand-mark">C</span><span>CAD<b>ia</b></span></button>
         <div className="project-breadcrumb"><span>{project?.name || 'Opening project…'}</span><ChevronDown size={14} /></div>
-        <nav className="main-menu"><button>File</button><button>Edit</button><button>View</button><button>Tools</button></nav>
+        <nav className="main-menu"><button>File</button><button>Edit</button><button>View</button><button>Tools</button><button className="supplier-menu-button" onClick={() => setShowSupplierFinder(true)}><MapPin size={13}/>Suppliers</button></nav>
         <div className="topbar-spacer" />
         <span className={`sync-state ${connection}`}><Cloud size={14} /> {connection === 'online' ? 'Saved / online' : connection === 'connecting' ? 'Connecting' : 'Reconnecting'}</span>
-        <button className={`codex-badge ${account?.connected || account?.account ? 'connected' : ''}`} onClick={() => setShowConnect(true)}><span />{account?.connected || account?.account ? `${account?.providerLabel || account?.account?.planType || 'AI'}${(account?.provider === 'codex' || account?.provider === 'codex_direct') && usage !== null ? ` · ${usage}% used` : ''}` : 'Connect AI'}</button>
+        <button className={`codex-badge ${account?.connected || account?.account ? 'connected' : ''}`} onClick={() => setShowConnect(true)}><span />{account?.connected || account?.account ? `${activeAIName}${(account?.provider === 'codex' || account?.provider === 'codex_direct') && usage !== null ? ` · ${usage}% used` : ''}` : 'Connect AI'}</button>
         <button className="icon-button" onClick={changeTheme} title="Change theme">{theme === 'dark' ? <Sun size={17} /> : <Moon size={17} />}</button>
         <div className="profile-menu"><span>{user.display_name.slice(0, 1)}</span><div><strong>{user.display_name}</strong><small>{user.email}</small></div><button onClick={onLogout} title="Sign out"><LogOut size={15} /></button></div>
       </header>
       <div className="cad-toolbar">
-        <div className="tool-group"><button title="New Part" onClick={() => command('new_part', { name: 'Untitled' })}><Box size={18} /><span>New Part</span></button><button title="New Assembly" onClick={() => command('new_assembly', { name: 'Untitled Assembly' })}><Layers3 size={18} /><span>Assembly</span></button><button title="Reconstruct editable CAD from engineering drawings" onClick={() => { setVisualCADMode('standard'); setShowVisualCAD(true) }}><Upload size={18} /><span>Drawing → CAD</span></button><button title="Reconstruct editable CAD from product / physical-object photos" onClick={() => { setPhotoCADMode('standard'); setShowPhotoCAD(true) }}><Camera size={18} /><span>Photo → CAD</span></button><button className="opencv-toolbar-button" title="OpenCV 5 Agentic Vision CAD" onClick={() => setShowOpenCVVision(true)}><ScanLine size={18} /><span>OpenCV Vision</span><i>5</i></button><button title="File Open" onClick={() => uploadRef.current?.click()}><FolderOpen size={18} /><span>Open</span></button><input ref={uploadRef} hidden type="file" accept=".scad.json,.step,.stp,.brep,.brp" onChange={upload} /><button title="Save" onClick={save}><Save size={18} /><span>Save</span></button></div>
+        <div className="tool-group"><button title="New Part" onClick={() => command('new_part', { name: 'Untitled' })}><Box size={18} /><span>New Part</span></button><button title="New Assembly" onClick={() => command('new_assembly', { name: 'Untitled Assembly' })}><Layers3 size={18} /><span>Assembly</span></button><button title="Reconstruct editable CAD from engineering drawings" onClick={() => setShowVisualCAD(true)}><Upload size={18} /><span>Drawing → CAD</span></button><button title="Reconstruct editable CAD from product / physical-object photos" onClick={() => setShowPhotoCAD(true)}><Camera size={18} /><span>Photo → CAD</span></button><button title="File Open" onClick={() => uploadRef.current?.click()}><FolderOpen size={18} /><span>Open</span></button><input ref={uploadRef} hidden type="file" accept=".scad.json,.step,.stp,.brep,.brp" onChange={upload} /><button title="Save" onClick={save}><Save size={18} /><span>Save</span></button></div>
         <div className="tool-separator" />
         <div className="tool-group icon-only"><button disabled={!state?.undo_available || busy} title="Undo" onClick={() => command('undo')}><Undo2 size={18} /></button><button disabled={!state?.redo_available || busy} title="Redo" onClick={() => command('redo')}><Redo2 size={18} /></button></div>
         <div className="tool-separator" />
@@ -416,17 +423,18 @@ export default function CadWorkspace({ user, onLogout }: Props) {
           <div className="view-toolbar"><button onClick={() => { setViewRevision((value) => value + 1) }} title="Fit view"><Maximize2 size={16} /></button><button onClick={captureView} title="Save current view as PNG"><Camera size={15} /></button>{orientations.map(([value, label]) => <button key={value} className={orientation === value ? 'active' : ''} onClick={() => setView(value)} title={value}>{label}</button>)}</div>
           <div className="axis-origin"><span className="x">X</span><span className="y">Y</span><span className="z">Z</span></div>
         </section>
-        <ChatPanel messages={messages} busy={busy} progress={progress} account={account} models={models} selectedModel={selectedModel} selectedEffort={effort} onModel={setSelectedModel} onEffort={setEffort} onConnect={() => setShowConnect(true)} onSend={sendPrompt} onCancel={cancelPrompt} />
+        <ChatPanel messages={messages} quickReplies={quickReplies} busy={busy} progress={progress} account={account} models={models} selectedModel={selectedModel} selectedEffort={effort} onModel={setSelectedModel} onEffort={setEffort} onConnect={() => setShowConnect(true)} onSend={sendPrompt} onCancel={cancelPrompt} />
       </div>
       <footer className="cad-statusbar">
         <span className="kernel-ready"><i /> B-REP READY</span><span><Workflow size={13} /> {state?.document?.type?.toUpperCase() || 'NO DOCUMENT'}</span><span>Revision {state?.document?.revision ?? 0}</span><span>{mesh?.stats.faces ?? 0} faces · {mesh?.stats.edges ?? 0} edges</span><span>Volume {volume.toLocaleString(undefined, { maximumFractionDigits: 2 })} mm³</span><span className="status-spacer" />{selectedLabel ? <span className="selected-status"><SquareMousePointer size={13} /> {String(selectedLabel).slice(0, 30)}</span> : <span>No selection</span>}<span>mm</span>
       </footer>
       {showConnect && <AIConnectModal account={account} onAccount={(next) => { setAccount(next); if (next?.connected || next?.account) void loadAccount() }} onClose={() => setShowConnect(false)} />}
-      {showManufacturing && <ManufacturingPanel projectId={projectId} onClose={() => setShowManufacturing(false)} onError={showError} />}
-      {showOpenCVVision && <OpenCVVisionLauncher onClose={() => setShowOpenCVVision(false)} onDrawing={() => { setShowOpenCVVision(false); setVisualCADMode('opencv5'); setShowVisualCAD(true) }} onPhoto={() => { setShowOpenCVVision(false); setPhotoCADMode('opencv5'); setShowPhotoCAD(true) }} />}
-      {showVisualCAD && <VisualCADModal key={`visual-${visualCADMode}`} projectId={projectId} connected={Boolean(account?.connected || account?.account)} selectedModel={selectedModel} effort={effort} initialVisionMode={visualCADMode} onClose={() => setShowVisualCAD(false)} onError={showError} onComplete={visualCadReady} onConnect={() => setShowConnect(true)} />}
-      {showPhotoCAD && <PhotoCADModal key={`photo-${photoCADMode}`} projectId={projectId} connected={Boolean(account?.connected || account?.account)} selectedModel={selectedModel} effort={effort} initialVisionMode={photoCADMode} onClose={() => setShowPhotoCAD(false)} onError={showError} onComplete={visualCadReady} onConnect={() => setShowConnect(true)} />}
+      {showManufacturing && <ManufacturingPanel projectId={projectId} onClose={() => setShowManufacturing(false)} onError={showError} modelName={state?.document?.title || project?.name || "CAD model"} modelReady={Boolean(state?.document?.has_geometry)} revision={state?.document?.revision} dimensions={mesh?.bounds ? [mesh.bounds.max[0]-mesh.bounds.min[0], mesh.bounds.max[1]-mesh.bounds.min[1], mesh.bounds.max[2]-mesh.bounds.min[2]] : null} customerEmail={user.email} customerName={user.display_name} />}
+      {showSupplierFinder && <SupplierFinderPanel projectId={projectId} modelReady={Boolean(state?.document?.has_geometry)} onClose={() => setShowSupplierFinder(false)} />}
+      {showVisualCAD && <VisualCADModal projectId={projectId} connected={Boolean(account?.connected || account?.account)} selectedModel={selectedModel} effort={effort} onClose={() => setShowVisualCAD(false)} onError={showError} onComplete={visualCadReady} onConnect={() => setShowConnect(true)} />}
+      {showPhotoCAD && <PhotoCADModal projectId={projectId} connected={Boolean(account?.connected || account?.account)} selectedModel={selectedModel} effort={effort} onClose={() => setShowPhotoCAD(false)} onError={showError} onComplete={visualCadReady} onConnect={() => setShowConnect(true)} />}
       {error && <div className="toast-error"><X size={16} /><span>{error}</span><button onClick={() => setError('')}><X size={14} /></button></div>}
     </main>
   )
 }
+

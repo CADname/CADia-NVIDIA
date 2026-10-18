@@ -5,13 +5,12 @@ import uuid
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
 from ..auth import CurrentUser
 from ..cad_runtime import runtime_manager
-from ..opencv_cad import capabilities as opencv_cad_capabilities
 from ..config import settings
+from ..heavy_jobs import HeavyJobBusy
 from ..database import get_db
 from ..photo_cad import ALLOWED_PHOTO_SUFFIXES, MAX_PHOTOS, PhotoCadJob, photo_cad_jobs
 from ..photo_cad_external import capabilities
@@ -51,15 +50,10 @@ async def _save_upload(file: UploadFile, target: Path) -> None:
 @router.get("/capabilities")
 def get_capabilities(project_id: str, user: CurrentUser, db: Session = Depends(get_db)):
     owned_project(db, user.id, project_id)
-    requested_vision_mode = "opencv5" if vision_mode.strip().lower() == "opencv5" else "standard"
-    if requested_vision_mode == "opencv5":
-        opencv = opencv_cad_capabilities()
-        if not opencv.get("available") or not opencv.get("configured"):
-            raise HTTPException(
-                status_code=503,
-                detail=f"OpenCV 5 Vision is unavailable: {opencv.get('reason') or 'OpenCV 5 runtime is not ready.'}",
-            )
-    return {"max_photos": MAX_PHOTOS, "external": capabilities()}
+    return {
+        "max_photos": MAX_PHOTOS,
+        "external": capabilities(),
+    }
 
 
 @router.post("/jobs")
@@ -72,16 +66,15 @@ async def create_job(
     dimension_hint: str = Form(""),
     model: str = Form("gpt-5.6-sol"),
     effort: str = Form("high"),
-    vision_mode: str = Form("standard"),
 ):
     owned_project(db, user.id, project_id)
     if not photos:
         raise HTTPException(status_code=422, detail="Upload at least one product photo.")
     if len(photos) > MAX_PHOTOS:
         raise HTTPException(status_code=422, detail=f"Upload at most {MAX_PHOTOS} product photos per reconstruction.")
-    runtime = runtime_manager.get(user.id, project_id)
+    project_root = runtime_manager.project_root(user.id, project_id)
     job_id = uuid.uuid4().hex
-    input_dir = runtime.root / "photo_cad" / job_id / "inputs"
+    input_dir = project_root / "photo_cad" / job_id / "inputs"
     input_dir.mkdir(parents=True, exist_ok=False)
     saved: dict[str, str] = {}
     try:
@@ -111,9 +104,12 @@ async def create_job(
         dimension_hint=dimension_hint.strip()[:1000],
         model=(model.strip() or "gpt-5.6-sol")[:100],
         effort=clean_effort,
-        vision_mode=requested_vision_mode,
+        vision_mode="standard",
     )
-    photo_cad_jobs.create(job)
+    try:
+        photo_cad_jobs.create(job)
+    except HeavyJobBusy as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     return job.public()
 
 
@@ -133,26 +129,3 @@ def cancel_job(project_id: str, job_id: str, user: CurrentUser, db: Session = De
         return photo_cad_jobs.cancel(job_id, user.id, project_id).public()
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Photo → CAD job was not found.") from exc
-
-
-@router.get("/jobs/{job_id}/opencv-artifacts/{artifact_path:path}")
-def get_opencv_artifact(
-    project_id: str,
-    job_id: str,
-    artifact_path: str,
-    user: CurrentUser,
-    db: Session = Depends(get_db),
-):
-    owned_project(db, user.id, project_id)
-    try:
-        photo_cad_jobs.get(job_id, user.id, project_id)
-    except KeyError as exc:
-        raise HTTPException(status_code=404, detail="Photo → CAD job was not found.") from exc
-    root = (runtime_manager.project_root(user.id, project_id) / "photo_cad" / job_id / "opencv").resolve()
-    target = (root / artifact_path).resolve()
-    if root != target and root not in target.parents:
-        raise HTTPException(status_code=404, detail="OpenCV artifact not found.")
-    if not target.is_file() or target.suffix.lower() not in {".png", ".json"}:
-        raise HTTPException(status_code=404, detail="OpenCV artifact not found.")
-    media = "image/png" if target.suffix.lower() == ".png" else "application/json"
-    return FileResponse(target, media_type=media)

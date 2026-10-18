@@ -15,6 +15,7 @@ type CreatedToken = TokenRow & {
   token: string
   server: string
   rpcUrl: string
+  remoteRpcUrl?: string
   bridgeDownload: string
   warning: string
 }
@@ -24,7 +25,7 @@ type Props = { projectId: string; onClose: () => void }
 export default function McpConnectModal({ projectId, onClose }: Props) {
   const [tokens, setTokens] = useState<TokenRow[]>([])
   const [created, setCreated] = useState<CreatedToken | null>(null)
-  const [label, setLabel] = useState('My MCP connection')
+  const [label, setLabel] = useState('My AI connection')
   const [days, setDays] = useState(30)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
@@ -57,38 +58,64 @@ export default function McpConnectModal({ projectId, onClose }: Props) {
     catch { setError('Could not copy to clipboard.') }
   }
 
-  const command = useMemo(() => created ? `python cadia_web_mcp_bridge.py --server ${created.server} --project ${projectId}` : '', [created, projectId])
-  const config = useMemo(() => created ? JSON.stringify({
+  const publicOrigin = typeof window === 'undefined' ? (created?.server || '') : window.location.origin
+  const remoteUrl = useMemo(() => created ? `${publicOrigin.replace(/\/$/, '')}/api/mcp` : '', [created, publicOrigin])
+  const authHeader = useMemo(() => created ? `Bearer ${created.token}` : '', [created])
+  const cursorConfig = useMemo(() => created ? JSON.stringify({
+    mcpServers: {
+      cadia: {
+        type: 'streamable-http',
+        url: remoteUrl,
+        headers: { Authorization: authHeader },
+      },
+    },
+  }, null, 2) : '', [created, remoteUrl, authHeader])
+  const codexConfig = useMemo(() => created ? `[mcp_servers.cadia]\nurl = "${remoteUrl}"\nbearer_token_env_var = "CADIA_MCP_TOKEN"` : '', [created, remoteUrl])
+  const legacyCommand = useMemo(() => created ? `python cadia_web_mcp_bridge.py --server ${publicOrigin} --project ${projectId}` : '', [created, projectId, publicOrigin])
+  const legacyConfig = useMemo(() => created ? JSON.stringify({
     mcpServers: {
       cadia: {
         command: 'python',
-        args: ['C:/PATH/cadia_web_mcp_bridge.py', '--server', created.server, '--project', projectId],
+        args: ['C:/PATH/cadia_web_mcp_bridge.py', '--server', publicOrigin, '--project', projectId],
         env: { CADIA_MCP_TOKEN: created.token },
       },
     },
-  }, null, 2) : '', [created, projectId])
+  }, null, 2) : '', [created, projectId, publicOrigin])
 
   return <div className="modal-backdrop" onMouseDown={(e) => e.currentTarget === e.target && onClose()}>
     <div className="modal-card mcp-modal">
       <button className="modal-close" onClick={onClose}><X size={18} /></button>
       <div className="connect-logo"><Network size={24} /></div>
-      <div className="eyebrow">UNIVERSAL MCP</div>
-      <h2>Connect CAD to another AI</h2>
-      <p className="muted">Create a project-scoped MCP token so external AI clients that support MCP can use the same CAD tools and core.</p>
-      <div className="mcp-warning">The external AI client manages its own login and plan. Do not enter that AI password into CADia. Use HTTPS on the public internet.</div>
+      <div className="eyebrow">CADIA REMOTE MCP</div>
+      <h2>Connect your own AI</h2>
+      <p className="muted">Use your existing Claude, Cursor, Codex or another MCP client with this CADia project. Your external AI account pays its own AI usage; CADia exposes the same editable CAD tools and core used by the web app.</p>
+      <div className="mcp-warning">Each token is locked to this project. Keep it private. CADia never needs your external AI password or API key.</div>
 
       {!created && <div className="mcp-create-row">
         <label>Connection name<input value={label} onChange={(e) => setLabel(e.target.value)} /></label>
         <label>Expires<select value={days} onChange={(e) => setDays(Number(e.target.value))}><option value={7}>7 days</option><option value={30}>30 days</option><option value={90}>90 days</option><option value={365}>1 year</option></select></label>
-        <button className="primary" disabled={busy} onClick={create}><Plus size={16} />{busy ? 'Creating…' : 'Create MCP token'}</button>
+        <button className="primary" disabled={busy} onClick={create}><Plus size={16} />{busy ? 'Creating…' : 'Create connection'}</button>
       </div>}
 
       {created && <div className="mcp-created">
         <div className="mcp-once"><KeyRound size={17} /><span><strong>The token is shown only once.</strong><small>{created.warning}</small></span></div>
-        <div className="mcp-code-row"><code>{created.token}</code><button onClick={() => copy('token', created.token)}>{copied === 'token' ? <Check size={15}/> : <Clipboard size={15}/>}</button></div>
-        <div className="mcp-step"><strong>1. Download bridge</strong><button onClick={() => download('/api/mcp/bridge.py')}><Download size={15}/> cadia_web_mcp_bridge.py</button></div>
-        <div className="mcp-step"><strong>2. Direct run example</strong><div className="mcp-code-row"><code>{command}</code><button onClick={() => copy('cmd', command)}>{copied === 'cmd' ? <Check size={15}/> : <Clipboard size={15}/>}</button></div></div>
-        <div className="mcp-step"><strong>3. stdio MCP config example</strong><div className="mcp-config"><pre>{config}</pre><button onClick={() => copy('config', config)}>{copied === 'config' ? <Check size={15}/> : <Clipboard size={15}/>}</button></div></div>
+
+        <div className="mcp-step"><strong>Remote MCP URL</strong><div className="mcp-code-row"><code>{remoteUrl}</code><button onClick={() => copy('url', remoteUrl)}>{copied === 'url' ? <Check size={15}/> : <Clipboard size={15}/>}</button></div></div>
+        <div className="mcp-step"><strong>Bearer token</strong><div className="mcp-code-row"><code>{created.token}</code><button onClick={() => copy('token', created.token)}>{copied === 'token' ? <Check size={15}/> : <Clipboard size={15}/>}</button></div></div>
+
+        <div className="mcp-step"><strong>Claude / custom connector</strong><span className="muted">Add the Remote MCP URL as a custom connector, then add request header <code>Authorization</code> with the value below.</span><div className="mcp-code-row"><code>{authHeader}</code><button onClick={() => copy('auth', authHeader)}>{copied === 'auth' ? <Check size={15}/> : <Clipboard size={15}/>}</button></div></div>
+
+        <div className="mcp-step"><strong>Cursor / Windsurf / compatible MCP clients</strong><div className="mcp-config"><pre>{cursorConfig}</pre><button onClick={() => copy('cursor', cursorConfig)}>{copied === 'cursor' ? <Check size={15}/> : <Clipboard size={15}/>}</button></div></div>
+
+        <div className="mcp-step"><strong>Codex</strong><span className="muted">Set environment variable <code>CADIA_MCP_TOKEN</code> to the token above, then add this to your Codex config.</span><div className="mcp-config"><pre>{codexConfig}</pre><button onClick={() => copy('codex', codexConfig)}>{copied === 'codex' ? <Check size={15}/> : <Clipboard size={15}/>}</button></div></div>
+
+        <details className="mcp-step">
+          <summary><strong>Legacy/local stdio bridge fallback</strong></summary>
+          <p className="muted">Only use this when a client cannot connect to Remote MCP directly.</p>
+          <button onClick={() => download('/api/mcp/bridge.py')}><Download size={15}/> cadia_web_mcp_bridge.py</button>
+          <div className="mcp-code-row"><code>{legacyCommand}</code><button onClick={() => copy('legacy-cmd', legacyCommand)}>{copied === 'legacy-cmd' ? <Check size={15}/> : <Clipboard size={15}/>}</button></div>
+          <div className="mcp-config"><pre>{legacyConfig}</pre><button onClick={() => copy('legacy-config', legacyConfig)}>{copied === 'legacy-config' ? <Check size={15}/> : <Clipboard size={15}/>}</button></div>
+        </details>
         <button className="secondary wide" onClick={() => setCreated(null)}>Create another token</button>
       </div>}
 

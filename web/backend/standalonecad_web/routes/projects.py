@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from ..auth import CurrentUser
 from ..cad_runtime import runtime_manager
 from ..database import get_db
+from ..heavy_jobs import heavy_job_manager
 from ..models import ChatMessage, Project
 from ..schemas import ProjectCreate, ProjectOut, ProjectUpdate
 
@@ -63,6 +64,12 @@ def update_project(project_id: str, payload: ProjectUpdate, user: CurrentUser, d
 @router.delete("/{project_id}", status_code=204)
 def delete_project(project_id: str, user: CurrentUser, db: Session = Depends(get_db)):
     project = owned_project(db, user.id, project_id)
+    if not heavy_job_manager.cancel_project(user.id, project.id, wait_timeout=25.0):
+        raise HTTPException(status_code=409, detail="The project still has a CAD worker shutting down. Try deletion again in a few seconds.")
+    from ..visual_cad import visual_cad_jobs
+    from ..photo_cad import photo_cad_jobs
+    visual_cad_jobs.forget_project(user.id, project.id)
+    photo_cad_jobs.forget_project(user.id, project.id)
     runtime_manager.drop(user.id, project.id)
     root = runtime_manager.project_root(user.id, project.id)
     db.delete(project)

@@ -90,7 +90,7 @@ def build_web_mesh(engine, face_tolerance: float, edge_tolerance: float, include
             for name, occurrence in doc.occurrences.items():
                 if occurrence.suppressed or occurrence.shape is None:
                     continue
-                transformed = transform_shape(occurrence.shape, occurrence.position_mm, occurrence.rotation_deg_xyz)
+                transformed = transform_shape(occurrence.display_shape or occurrence.shape, occurrence.position_mm, occurrence.rotation_deg_xyz)
                 faces, edges = _shape_rows(transformed, face_tolerance, edge_tolerance, include_edges, str(name))
                 faces_out.extend(faces)
                 edges_out.extend(edges)
