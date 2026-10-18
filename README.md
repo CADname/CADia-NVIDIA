@@ -1,6 +1,6 @@
 # CADia — Design Anywhere. Describe It. Edit It. Manufacture It.
 
-> **From a sentence to verified, editable mechanical CAD — and a live manufacturing quote — without leaving the browser. NVIDIA Nemotron plans the engineering workflow; CADia executes it as real B-Rep geometry.**
+> **From a sentence to verified, editable mechanical CAD — and a live manufacturing quote — without leaving the browser. NVIDIA Nemotron verifies engineering requirements in Codex/OpenAI API CAD workflows; CADia executes verified, editable B-Rep geometry.**
 
 **Live app:** https://app.cadia.co.kr  
 **Hackathon track:** Best Apps and Agents  
@@ -10,6 +10,13 @@
 
 ---
 
+
+<!-- CADIA_NVIDIA_HYBRID_SUPPLIER_20261019 -->
+## Supplier Finder ??from editable CAD to manufacturers worldwide
+
+![CADia Supplier Finder showing an interactive manufacturing-provider map and results](docs/images/supplier-finder.png)
+
+**Live feature in CADia:** Select **Suppliers** in the top menu, search any city/address (or optionally use GPS), choose a **5 / 12 / 25 km** radius, pan or zoom the map, and inspect manufacturing-directory candidates. TomTom Places v3 and optional Geoapify supply the location data; OpenStreetMap supplies the map. The directory does not independently verify shops' production capabilities or current availability. Supplier Finder is **not a Nemotron inference feature**; it demonstrates the CAD-to-manufacturing product journey.
 
 ### Real CAD results from the current build
 
@@ -34,7 +41,7 @@ Open a browser anywhere
         ↓
 Describe the mechanical part you need
         ↓
-NVIDIA Nemotron plans the engineering task
+Codex / OpenAI API plans CAD with Nemotron supervision
         ↓
 CADia builds verified editable B-Rep CAD
         ↓
@@ -89,7 +96,7 @@ That is the core difference: **CADia is not only text-to-3D. It is a browser-to-
 | CAD action surface | **118** project-scoped CAD operations; the expected tool count is enforced by automated tests |
 | Release test audit | `pytest -q` → **submission-focused runtime/NVIDIA tests pass** on the reviewed build |
 | Manufacturing handoff | Live material, production-quote, quantity, and destination-shipping workflow through Slant 3D MCP; final checkout is intentionally disabled in the public demo |
-| NVIDIA execution path | Direct Nemotron provider, typed CAD program, local validation, deterministic compilation, kernel verification, rollback, and bounded repair |
+| NVIDIA execution path | Codex + Nemotron or OpenAI API + Nemotron hybrid, source-grounded requirements, CAD evidence audit, kernel-error recovery guidance, deterministic B-Rep verification |
 
 The evidence directory is intentionally inspectable: judges can open the exact prompt, preview the resulting model, and inspect STEP/AP242, STL, 3MF, and G-code artifacts where available.
 
@@ -107,7 +114,7 @@ CADia connects design intent, engineering geometry, and manufacturing in one pro
 
 ```mermaid
 flowchart LR
-    A[Idea / engineering request] --> B[NVIDIA Nemotron<br/>engineering plan]
+    A[Idea / engineering request] --> B[Codex or OpenAI API CAD plan<br/>NVIDIA Nemotron supervision]
     B --> C[Editable B-Rep CAD]
     C --> D[Follow-up edits<br/>+ direct selection]
     D --> E[Assembly + verification]
@@ -139,91 +146,18 @@ CADia keeps the model alive across the rest of the workflow:
 
 ## Why NVIDIA Nemotron matters
 
-Nemotron is not a chatbot bolted onto the side of the product. For complex requests, **NVIDIA Nemotron 3 Ultra through Nebius Token Factory acts as the engineering planner inside CADia's autonomous workflow**.
+CADia exposes **two NVIDIA Nemotron hybrid workflows**, not a standalone Nemotron Direct choice:
 
-Nemotron interprets the user's mechanical goal and produces a constrained high-level CAD program. CADia then validates that program, deterministically compiles it into CAD operations, executes it through Open CASCADE/CadQuery, verifies the result, and can feed a concrete kernel failure back into one bounded repair cycle.
+| Visible option | Primary executable CAD planner | NVIDIA Nemotron role |
+| --- | --- | --- |
+| **ChatGPT / Codex + NVIDIA Nemotron** | User-authenticated Codex | Extracts supported engineering requirements for complex requests, gives kernel-error recovery guidance, audits executed CAD against concrete evidence, and can help trigger one bounded incremental repair when a deterministic evidence gate allows it |
+| **OpenAI API + NVIDIA Nemotron** | OpenAI API model (server-provided or user API key) | Extracts supported requirements, gives kernel-error recovery guidance, and reviews the finished CAD using a **non-mutating advisory audit** |
 
-That gives CADia a clear division of responsibility:
+In both modes, **CADia / Open CASCADE / CadQuery owns geometry truth**: validated tool execution, editable B-Rep state, history, verification, rollback and persistence. Nemotron is an engineering supervisor, not the CAD geometry kernel. A `balanced` hybrid profile can avoid remote model calls for simple, safe requests; a configured key does not guarantee a specific user request called Nemotron. For judge verification, use a genuinely complex request and show its real server-side Nemotron trace without exposing credentials.
 
-```text
-NVIDIA Nemotron
-Engineering intent + multi-step planning
-        ↓
-CADia
-Typed validation + deterministic execution
-        ↓
-Open CASCADE / CadQuery
-Geometry truth
-        ↓
-CADia verification / rollback
-        ↓
-Editable engineering result
-```
+The browser workflow is: describe a part ??the selected primary planner creates CAD operations ??Nemotron supplies engineering supervision when appropriate ??CADia executes and verifies a persistent editable model ??modify, export, find manufacturers, or request a quote.
 
-The AI decides **what engineering steps should happen**. The deterministic CAD system decides **what geometry is valid**.
-
----
-
-## The autonomous workflow
-
-The core hackathon workflow is deliberately **multi-step and end-to-end** rather than a single model call:
-
-```mermaid
-flowchart TD
-    A[User engineering request] --> B[Current CAD state + selected topology]
-    B --> C{Deterministic fast path available?}
-    C -- Yes --> D[CADia native deterministic plan]
-    C -- No --> E[NVIDIA Nemotron 3 Ultra<br/>via Nebius Token Factory]
-    E --> F[Typed high-level CAD program]
-    F --> G[JSON-schema validation]
-    G --> H[Semantic engineering validation]
-    H --> I[Deterministic CAD compiler]
-    D --> J[CADia native execution engine]
-    I --> J
-    J --> K[Open CASCADE / CadQuery B-Rep]
-    K --> L[Geometry + assembly verification]
-    L --> M{Valid result?}
-    M -- Yes --> N[Persist editable CAD state]
-    M -- No --> O[Rollback to safe snapshot]
-    O --> P[Nemotron bounded repair from real kernel error]
-    P --> G
-    N --> Q[Follow-up edit / selection / assembly / export]
-```
-
-### What Nemotron does
-
-Nemotron is not used as a decorative chatbot or post-hoc label. In the direct NVIDIA path it is responsible for:
-
-1. interpreting a complex mechanical request,
-2. producing a **strict typed CAD program** instead of arbitrary Python,
-3. respecting a schema that separates model reasoning from CAD runtime internals,
-4. receiving concrete kernel failures when a build cannot be completed,
-5. returning at most one corrected schema-valid program for bounded recovery.
-
-CADia retains deterministic authority over geometry, document state, topology, verification, rollback, and persistence.
-
-### Why this separation matters
-
-The model reasons about *engineering intent*; the CAD kernel owns *geometry truth*.
-
-```text
-Nemotron reasoning
-      ↓
-Constrained CAD program
-      ↓
-Deterministic validation + compilation
-      ↓
-OCCT/CadQuery execution
-      ↓
-Kernel evidence
-      ↓
-Verified editable CAD
-```
-
-That separation prevents the language model from directly mutating arbitrary files, document handles, topology IDs, or low-level runtime bindings.
-
----
-
+See [`docs/NVIDIA_AGENTIC_WORKFLOW.md`](docs/NVIDIA_AGENTIC_WORKFLOW.md), [`docs/JUDGE_GUIDE.md`](docs/JUDGE_GUIDE.md) and [`NVIDIA_NEBIUS_IMPLEMENTATION.md`](NVIDIA_NEBIUS_IMPLEMENTATION.md).
 ## Current capabilities
 
 ### AI-native CAD
@@ -275,53 +209,22 @@ These visual paths are experimental and are intentionally separate from the core
 
 ## NVIDIA + Nebius integration
 
-CADia's default NVIDIA model configuration is:
+**Provider:** Nebius Token Factory 쨌 **Model:** `nvidia/Nemotron-3-Ultra-550b-a55b`
+**User-facing choices:** **ChatGPT / Codex + NVIDIA Nemotron** and **OpenAI API + NVIDIA Nemotron**. The Nemotron Direct backend may remain for internal compatibility, but is not exposed as a third choice in the public hackathon interface.
+
+The two real implementation paths are:
 
 ```text
-Provider: Nebius Token Factory
-Model:    nvidia/Nemotron-3-Ultra-550b-a55b
+Codex           -> NemotronAugmentedCodexAgent -> deterministic CADia executor
+OpenAI API      -> NemotronAugmentedAPIAgent   -> deterministic CADia executor
+Both            -> NemotronOrchestrator        -> Nebius Token Factory
 ```
 
-The implementation lives primarily in:
+The API hybrid's post-success audit is advisory only; the Codex hybrid can apply bounded auto-repair only when grounded evidence permits it. Use the current server's `NEBIUS_API_KEY` (never include it in the repository). Check the health flag and a real model-call trace separately.
 
-```text
-web/backend/standalonecad_web/providers/nebius_nemotron.py
-web/backend/standalonecad_web/nemotron_program_v10.py
-web/backend/standalonecad_web/nemotron_orchestrator.py
-web/backend/standalonecad_web/nemotron_tool_agent.py
-web/backend/standalonecad_web/nvidia_review.py
-web/backend/standalonecad_web/routes/ai.py
-```
+Relevant files: `web/backend/standalonecad_web/nemotron_codex_agent.py`, `nemotron_api_agent.py`, `nemotron_orchestrator.py`, `engineering_verification.py` and `routes/ai.py`.
 
-### Token Factory transport hardening
-
-Nebius constrained decoding and CADia's local contract are kept separate. CADia preserves its authoritative local schema, creates a transport-safe copy for Token Factory when needed, and still applies the stricter local validation before any geometry is executed.
-
-For example, the Token Factory grammar currently does not accept every JSON Schema keyword CADia uses locally. CADia removes unsupported transport-only assertions from the remote copy without weakening the authoritative local validator.
-
-See [docs/NVIDIA_AGENTIC_WORKFLOW.md](docs/NVIDIA_AGENTIC_WORKFLOW.md) for the detailed execution path.
-
----
-
-## NVIDIA + Nebius implementation highlights
-
-The submission build includes:
-
-- a direct **Nebius Token Factory → NVIDIA Nemotron** provider,
-- a constrained high-level mechanical CAD program contract,
-- local schema + semantic validation before geometry execution,
-- deterministic compilation from Nemotron's program into the CADia engine,
-- Token Factory schema-transport compatibility hardening,
-- kernel-error-grounded bounded repair,
-- Nemotron engineering contract/audit infrastructure,
-- NVIDIA-focused provider UI and runtime diagnostics,
-- expanded drawing/photo CAD support and verification infrastructure, and
-- generalized Inventor-style CAD semantics without replacing the stable OCCT/CadQuery backend.
-
-See [NVIDIA_NEBIUS_IMPLEMENTATION.md](NVIDIA_NEBIUS_IMPLEMENTATION.md) for the implementation map.
-
----
-
+The independent Supplier Finder uses TomTom/Geoapify and OpenStreetMap, **not Nemotron**.
 ## Architecture
 
 ```text
@@ -334,9 +237,9 @@ Nginx / FastAPI
         +--> PostgreSQL project/auth state
         |
         +--> AI provider layer
-        |      +--> NVIDIA Nemotron 3 Ultra
+        |      +--> NVIDIA Nemotron 3 Ultra (engineering supervision)
         |      |      via Nebius Token Factory
-        |      +--> optional alternate providers
+        |      +--> Codex / OpenAI API planning modes
         |
         +--> Typed CAD program / tool layer
         |
@@ -377,49 +280,18 @@ The important behavior is not just first-pass generation: CADia maintains an edi
 
 ## Run locally
 
-### Prerequisites
-
-- Docker Engine
-- Docker Compose
-- A Nebius Token Factory API key for the NVIDIA Nemotron path
-
-### 1. Configure environment
-
-```bash
-cp .env.example .env
-```
-
-Generate local secrets and place them in `.env`:
-
-```bash
-openssl rand -hex 32
-openssl rand -base64 48
-```
-
-Set at least:
+Docker Engine, Docker Compose and a Nebius Token Factory key are required to demonstrate the NVIDIA hybrid path. Copy `.env.example` to `.env`, configure the application/database secrets locally, and set:
 
 ```text
-POSTGRES_PASSWORD=<generated value>
-NEXIS_SESSION_SECRET=<generated value>
-NEBIUS_API_KEY=<your Nebius Token Factory key>
+NEBIUS_API_KEY=<your private Nebius key>
 CADIA_NEMOTRON_ENABLED=true
+CADIA_NEMOTRON_POST_VERIFY_ENABLED=true
+CADIA_NEMOTRON_POST_VERIFY_AUTO_REPAIR=true
+CADIA_NEMOTRON_HYBRID_MODE=balanced
 NEBIUS_NEMOTRON_MODEL=nvidia/Nemotron-3-Ultra-550b-a55b
 ```
 
-### 2. Start CADia
-
-```bash
-docker compose up --build
-```
-
-The application binds to `127.0.0.1:8000` by default.
-
-### 3. Use the NVIDIA path
-
-Open CADia, connect/select **NVIDIA Nemotron**, then submit a mechanical design request. Complex requests are planned through Nemotron on Token Factory and executed by the deterministic CAD runtime.
-
----
-
+Run `docker compose up --build`. In CADia, select one of the **two hybrid AI options**; authenticate ChatGPT/Codex or use the configured shared OpenAI API / provide your own API key. Verify an actual Nemotron call on a nontrivial request. Health configuration alone is not a completed model-call test.
 ## Tests
 
 The repository includes tests for the web runtime, project-scoped MCP surface, NVIDIA/Nebius transport contracts, and release behavior. The runtime source in this GitHub package is copied from the deployed server snapshot rather than modified for presentation.

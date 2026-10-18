@@ -1,78 +1,52 @@
-# CADia — 3-Minute NVIDIA Hackathon Demo
+# CADia — NVIDIA/Nebius Hackathon Three-Minute Demo
 
-## Goal
+**Story:** engineering request → Codex/OpenAI API CAD plan → Nemotron requirement verification → deterministic editable CAD → follow-up modification → supplier discovery.
 
-Make the product understandable in the first 20 seconds: **CADia lets you open a browser anywhere, describe a mechanical design, keep editing the same real CAD model, and continue toward physical manufacturing. NVIDIA Nemotron drives the multi-step engineering plan.**
+## 0:00–0:20 — Product
 
-## 0:00–0:20 — Product promise
+Open the browser CAD workspace immediately. Explain that CADia maintains a real editable B-Rep mechanical model, not a single-use 3D preview.
 
-Show the browser workspace immediately.
+## 0:20–0:45 — Show the two NVIDIA hybrid modes
 
-Narrative:
+In **Connect AI**, display:
 
-> Traditional CAD requires installed desktop software and a long command-driven workflow. CADia turns that workflow into a browser product: describe a part, refine it conversationally, select exact geometry when needed, and continue from the same editable CAD model into manufacturing.
+- **ChatGPT / Codex + NVIDIA Nemotron** — Codex plans CAD operations; Nemotron checks engineering requirements and can guide recovery and bounded post-verification correction where deterministically justified.
+- **OpenAI API + NVIDIA Nemotron** — API-based CAD planning; Nemotron checks requirements, audits results, and gives recovery guidance. Post-success audit remains advisory only.
 
-On screen:
+Do not present Nemotron as the 3D geometry kernel or imply every simple prompt triggers an external Nemotron call. Show a real Nemotron trace for the judged request when available.
 
-```text
-Idea → Nemotron engineering plan → Editable B-Rep CAD → Modify → Verify → Manufacture
-```
+## 0:45–1:30 — Create verified geometry
 
-## 0:20–0:40 — Why NVIDIA Nemotron
-
-Show the NVIDIA Nemotron provider / agent trace. Explain that Nemotron is the engineering planner, not the geometry kernel.
-
-```text
-Nemotron 3 Ultra via Nebius Token Factory
-→ constrained CAD program
-→ CADia validation/compiler
-→ OCCT/CadQuery execution
-→ verification / bounded recovery
-```
-
-## 0:40–1:25 — Build something meaningful
-
-Use the same reliable multi-operation prompt shown in the judge guide:
+Use this example:
 
 ```text
 Create a pillow-block bearing housing for a 6205 bearing with a 120 x 60 x 12 mm base,
-two 10 mm mounting holes, a 70 mm outside-diameter bearing boss, a 52 mm bore,
+two 10 mm mounting holes, a 70 mm outside-diameter boss, a 52 mm bore,
 and two 8 mm reinforcing ribs.
 ```
 
-Keep the generation visually moving and show the feature tree plus the resulting B-Rep. The point is to demonstrate that one engineering request becomes a multi-operation CAD workflow, not a single mesh-generation call.
+Show the feature tree and actual result; briefly highlight the requirement ledger/audit or model-call trace.
 
-## 1:25–2:00 — Prove continuous editing
-
-Modify the **same** model:
+## 1:30–2:05 — Edit the same model
 
 ```text
-Increase the base thickness to 16 mm while keeping both mounting-hole locations unchanged.
+Increase the base thickness to 16 mm while preserving the mounting-hole positions.
 ```
 
-Then select one visible edge or face and perform a targeted edit (for example, a fillet or direct face change). Keep the feature tree visible long enough to show that CADia did not throw the first model away.
+Select an edge or face, demonstrate editing, and export STEP/STL.
 
-## 2:00–2:15 — Proof, not promises
+## 2:05–2:35 — Find manufacturing providers
 
-Flash a compact evidence overlay while the product remains on screen:
+Click the independent **Suppliers** top-menu item. Search a city (for example, Tokyo), select a 25 km radius, show provider pins, drag/zoom the map and browse the provider list. Explain that these are **directory candidates**, not verified service/production capacity.
 
-```text
-29 saved CAD cases · 118 typed CAD operations · 47 passing submission-focused tests
-```
+Screenshot: `docs/images/supplier-finder.png`.
 
-Then briefly show an existing assembly or the feature tree to establish that the product is broader than the single demo prompt.
+## 2:35–2:55 — Manufacturing quote
 
-## 2:15–2:50 — CAD to physical production
+Open **Manufacture → Print & Ship**. Show available materials and, if the service is enabled, the quotation/quantity/shipping flow. Checkout and orders remain disabled for a safe judge demo.
 
-Open **Manufacture → Print & Ship** on the active model. Show material/quantity, a live production quote, and destination-based shipping options. State clearly that payment/final order creation is intentionally disabled in the public hackathon deployment.
+## 2:55–3:00 — Close
 
-## What not to put in the primary 3-minute pitch
+**CADia unifies AI-assisted engineering planning, Nemotron verification, editable CAD and supplier discovery in one browser workspace.**
 
-Do not use Drawing-to-CAD or Photo-to-CAD as the main demo path. They are experimental, slower, and distract from the strongest judged story: **Nemotron planning → verified editable CAD → continuous modification → manufacturing**. Mention them only as additional capabilities if time remains.
-
-## 2:50–3:00 — Close
-
-Final screen:
-
-> **CADia — Design anywhere. Describe it. Edit it. Manufacture it.**
-> NVIDIA Nemotron turns engineering intent into a verified multi-step CAD workflow.
+**Before recording:** confirm `NEBIUS_API_KEY` is configured, run a real Nebius call and check the logs privately, ensure the live app actually reflects this GitHub commit, and verify the supplier provider API keys. Do not show any API key or private customer data.

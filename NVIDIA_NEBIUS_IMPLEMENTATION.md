@@ -1,39 +1,26 @@
-# NVIDIA + Nebius Implementation Notes
+# NVIDIA + Nebius Implementation Notes — CADia Hybrid Submission
 
-This document describes the NVIDIA/Nebius execution layer included in the CADia submission build.
+CADia uses NVIDIA Nemotron 3 Ultra via **Nebius Token Factory** as an engineering reasoning and verification assistant in two public-facing CAD workflows.
 
-## Direct provider and bounded execution
+| Visible UI mode | Primary CAD planner | Nemotron contribution |
+| --- | --- | --- |
+| **ChatGPT / Codex + NVIDIA Nemotron** | Authenticated Codex | Requirement contract, kernel-error recovery guidance, success audit, and deterministic-gate-controlled bounded post-success auto-repair |
+| **OpenAI API + NVIDIA Nemotron** | Connected OpenAI API model (user key or configured shared server API) | Requirement contract, kernel-error recovery guidance, and advisory post-success audit; no automatic post-success edits |
 
-CADia includes a server-side `nemotron` provider backed by Nebius Token Factory and NVIDIA Nemotron 3 Ultra. Complex requests can be translated into a typed high-level CAD program rather than arbitrary generated Python. CADia validates that program, compiles it into deterministic CAD operations, executes those operations through OCCT/CadQuery, verifies the result, rolls back on failure, and permits at most one schema-valid Nemotron correction grounded in the concrete kernel error.
+Nemotron does **not** execute geometry itself. CADia's validated tool interpreter and **Open CASCADE / CadQuery** own CAD execution, geometry validation, snapshots, persistence and rollback. The `balanced` routing profile can intentionally avoid unnecessary external Nemotron calls for simple tasks.
 
-Primary implementation:
+## Relevant source
 
-- `web/backend/standalonecad_web/providers/nebius_nemotron.py`
-- `web/backend/standalonecad_web/nemotron_program_v10.py`
-- `web/backend/standalonecad_web/routes/ai.py`
-- `web/backend/standalonecad_web/nemotron_orchestrator.py`
-- `web/backend/standalonecad_web/nvidia_review.py`
+- `web/backend/standalonecad_web/providers/nebius_nemotron.py` — Nebius-compatible model transport
+- `web/backend/standalonecad_web/nemotron_orchestrator.py` — requirement extraction / recovery guidance / audits
+- `web/backend/standalonecad_web/nemotron_codex_agent.py` — Codex hybrid agent
+- `web/backend/standalonecad_web/nemotron_api_agent.py` — OpenAI API hybrid agent
+- `web/backend/standalonecad_web/engineering_verification.py` — deterministic audit/repair gate
+- `web/backend/standalonecad_web/routes/ai.py` — execution routing
+- `web/frontend/src/components/AIConnectModal.tsx` — public hybrid mode selection
 
-## Multi-step autonomous path
+`NEBIUS_API_KEY` stays only in the server's runtime environment. It is neither needed nor appropriate in GitHub. Configuration health is not proof of an actual successful Nemotron request; verify the real provider trace before submission.
 
-1. inspect the user's engineering request and current CAD context,
-2. use an exact deterministic shortcut only when it covers the complete request,
-3. otherwise invoke Nemotron for a typed CAD program,
-4. validate schema and semantics locally,
-5. compile and execute multiple CAD operations,
-6. verify completed geometry or assembly state,
-7. roll back atomically on failure,
-8. feed the concrete kernel failure to Nemotron for one bounded correction,
-9. persist only a verified editable result.
+## Broader design-to-manufacturing demonstration
 
-## Token Factory transport hardening
-
-CADia keeps its authoritative local schema separate from the transport-safe schema sent to constrained decoding. Unsupported transport-only assertions such as `uniqueItems` can be removed from the remote copy while the stricter local validator still enforces them.
-
-## Product evaluation path
-
-The submission build includes NVIDIA Nemotron as a direct CAD agent through Nebius Token Factory. The repository source mirrors the deployed server snapshot; no GitHub-only routing or UI behavior is added to the runtime source.
-
-## Generalized CAD semantics available to the agent
-
-The same execution layer can reach broad reusable CAD capabilities including Inventor-style extent semantics, history-aware and direct face edits, feature mirror, work features, editable sketch definitions, GeometryIntent-style assembly references, and drawing/photo reconstruction support.
+The independent **Supplier Finder** browser menu displays an interactive OpenStreetMap view, with worldwide place search provided by TomTom Places v3 and optional Geoapify. This is a location/directory feature (not powered by Nemotron); it demonstrates the *after CAD* product workflow. See `docs/images/supplier-finder.png`.
