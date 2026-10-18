@@ -11,13 +11,6 @@
 ---
 
 
-<!-- CADIA_NVIDIA_HYBRID_SUPPLIER_20261019 -->
-## Supplier Finder ??from editable CAD to manufacturers worldwide
-
-![CADia Supplier Finder showing an interactive manufacturing-provider map and results](docs/images/supplier-finder.png)
-
-**Live feature in CADia:** Select **Suppliers** in the top menu, search any city/address (or optionally use GPS), choose a **5 / 12 / 25 km** radius, pan or zoom the map, and inspect manufacturing-directory candidates. TomTom Places v3 and optional Geoapify supply the location data; OpenStreetMap supplies the map. The directory does not independently verify shops' production capabilities or current availability. Supplier Finder is **not a Nemotron inference feature**; it demonstrates the CAD-to-manufacturing product journey.
-
 ### Real CAD results from the current build
 
 <table>
@@ -155,7 +148,7 @@ CADia exposes **two NVIDIA Nemotron hybrid workflows**, not a standalone Nemotro
 
 In both modes, **CADia / Open CASCADE / CadQuery owns geometry truth**: validated tool execution, editable B-Rep state, history, verification, rollback and persistence. Nemotron is an engineering supervisor, not the CAD geometry kernel. A `balanced` hybrid profile can avoid remote model calls for simple, safe requests; a configured key does not guarantee a specific user request called Nemotron. For judge verification, use a genuinely complex request and show its real server-side Nemotron trace without exposing credentials.
 
-The browser workflow is: describe a part ??the selected primary planner creates CAD operations ??Nemotron supplies engineering supervision when appropriate ??CADia executes and verifies a persistent editable model ??modify, export, find manufacturers, or request a quote.
+The browser workflow is: describe a part → the selected primary planner creates CAD operations → Nemotron supplies engineering supervision when appropriate → CADia executes and verifies a persistent editable model → modify, export, find manufacturers, or request a quote.
 
 See [`docs/NVIDIA_AGENTIC_WORKFLOW.md`](docs/NVIDIA_AGENTIC_WORKFLOW.md), [`docs/JUDGE_GUIDE.md`](docs/JUDGE_GUIDE.md) and [`NVIDIA_NEBIUS_IMPLEMENTATION.md`](NVIDIA_NEBIUS_IMPLEMENTATION.md).
 ## Current capabilities
@@ -205,11 +198,17 @@ These visual paths are experimental and are intentionally separate from the core
 - Live **Slant 3D MCP** materials, production quoting, quantity, and destination-based shipping workflow
 - Optional printer execution integrations; public judging mode keeps final payment/order submission disabled
 
+### Supplier Finder: Find Manufacturers Worldwide
+
+<img src="docs/images/supplier-finder.png" alt="CADia Supplier Finder with a worldwide manufacturing-provider map and nearby supplier results" width="900">
+
+**Live feature in CADia:** Open **Suppliers** from the top menu, search a city/address or optionally use GPS, choose a **5 / 12 / 25 km** radius, and explore the interactive map and nearby directory results. TomTom Places v3 and optional Geoapify provide location results; OpenStreetMap provides the map tiles. Directory listings do **not** independently establish a supplier's actual production capabilities or availability. This is a CAD-to-manufacturing discovery feature, not an NVIDIA Nemotron inference feature.
+
 ---
 
 ## NVIDIA + Nebius integration
 
-**Provider:** Nebius Token Factory 쨌 **Model:** `nvidia/Nemotron-3-Ultra-550b-a55b`
+**Provider:** Nebius Token Factory · **Model:** `nvidia/Nemotron-3-Ultra-550b-a55b`
 **User-facing choices:** **ChatGPT / Codex + NVIDIA Nemotron** and **OpenAI API + NVIDIA Nemotron**. The Nemotron Direct backend may remain for internal compatibility, but is not exposed as a third choice in the public hackathon interface.
 
 The two real implementation paths are:
