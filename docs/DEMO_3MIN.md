@@ -6,12 +6,11 @@
 
 Open the browser CAD workspace immediately. Explain that CADia maintains a real editable B-Rep mechanical model, not a single-use 3D preview.
 
-## 0:20–0:45 — Show the two NVIDIA hybrid modes
+## 0:20–0:45 — Show the NVIDIA hybrid actually available
 
-In **Connect AI**, display:
+In **Connect AI**, demonstrate **ChatGPT / Codex + NVIDIA Nemotron**: Codex plans CAD operations and Nemotron checks engineering requirements, audits results, and can guide bounded repair. The supplied live-server source snapshot currently displays this mode only.
 
-- **ChatGPT / Codex + NVIDIA Nemotron** — Codex plans CAD operations; Nemotron checks engineering requirements and can guide recovery and bounded post-verification correction where deterministically justified.
-- **OpenAI API + NVIDIA Nemotron** — API-based CAD planning; Nemotron checks requirements, audits results, and gives recovery guidance. Post-success audit remains advisory only.
+The GitHub submission source also implements **OpenAI API + NVIDIA Nemotron**, with advisory post-success auditing. Mention or show that second mode **only if it is actually selectable in the environment being recorded**. Do not claim that a GitHub-only UI update is automatically deployed.
 
 Do not present Nemotron as the 3D geometry kernel or imply every simple prompt triggers an external Nemotron call. Show a real Nemotron trace for the judged request when available.
 
@@ -49,4 +48,4 @@ Open **Manufacture → Print & Ship**. Show available materials and, if the serv
 
 **CADia unifies AI-assisted engineering planning, Nemotron verification, editable CAD and supplier discovery in one browser workspace.**
 
-**Before recording:** confirm `NEBIUS_API_KEY` is configured, run a real Nebius call and check the logs privately, ensure the live app actually reflects this GitHub commit, and verify the supplier provider API keys. Do not show any API key or private customer data.
+**Before recording:** confirm `NEBIUS_API_KEY` is configured, run a real Nebius call and check the logs privately, check which hybrid choices the live app actually exposes (GitHub and deployment are separate), and verify the supplier provider API keys. Do not show any API key or private customer data.

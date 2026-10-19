@@ -139,7 +139,7 @@ CADia keeps the model alive across the rest of the workflow:
 
 ## Why NVIDIA Nemotron matters
 
-CADia exposes **two NVIDIA Nemotron hybrid workflows**, not a standalone Nemotron Direct choice:
+The hackathon repository exposes **two NVIDIA Nemotron hybrid workflows**, not a standalone Nemotron Direct choice:
 
 | Visible option | Primary executable CAD planner | NVIDIA Nemotron role |
 | --- | --- | --- |
@@ -209,7 +209,7 @@ These visual paths are experimental and are intentionally separate from the core
 ## NVIDIA + Nebius integration
 
 **Provider:** Nebius Token Factory · **Model:** `nvidia/Nemotron-3-Ultra-550b-a55b`
-**User-facing choices:** **ChatGPT / Codex + NVIDIA Nemotron** and **OpenAI API + NVIDIA Nemotron**. The Nemotron Direct backend may remain for internal compatibility, but is not exposed as a third choice in the public hackathon interface.
+**GitHub submission UI choices:** **ChatGPT / Codex + NVIDIA Nemotron** and **OpenAI API + NVIDIA Nemotron**. The Nemotron Direct backend remains for compatibility but is not offered as a third choice. In the uploaded October 19 server-source snapshot, the live-server modal shows only Codex; this GitHub UI intentionally adds the API-hybrid choice without changing that server.
 
 The two real implementation paths are:
 
@@ -293,7 +293,7 @@ NEBIUS_NEMOTRON_MODEL=nvidia/Nemotron-3-Ultra-550b-a55b
 Run `docker compose up --build`. In CADia, select one of the **two hybrid AI options**; authenticate ChatGPT/Codex or use the configured shared OpenAI API / provide your own API key. Verify an actual Nemotron call on a nontrivial request. Health configuration alone is not a completed model-call test.
 ## Tests
 
-The repository includes tests for the web runtime, project-scoped MCP surface, NVIDIA/Nebius transport contracts, and release behavior. The runtime source in this GitHub package is copied from the deployed server snapshot rather than modified for presentation.
+The repository includes tests for the web runtime, project-scoped MCP surface, NVIDIA/Nebius transport contracts, and release behavior. The code is based on the uploaded server-source snapshot, with deliberate GitHub-only changes: removing Free/Pro subscription screens and the connection guide, disabling unsafe hard-coded demo credentials, and exposing both existing hybrid backends in the AI connection UI. These differences do not modify the live server.
 
 ```bash
 pytest -q

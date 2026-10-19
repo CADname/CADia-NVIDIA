@@ -6,8 +6,8 @@
 ## Fast evaluation
 
 1. Launch CADia and open a project.
-2. Open **Connect AI** and select **ChatGPT / Codex + NVIDIA Nemotron** or **OpenAI API + NVIDIA Nemotron**. Both are hybrid workflows; there is no separate Nemotron Direct choice in this public interface.
-3. If required, authorize ChatGPT/Codex or select the server-provided OpenAI API connection (or connect your own OpenAI API key). The server must have `NEBIUS_API_KEY` for Nemotron assistance.
+2. On the live server captured in the October 19 source snapshot, **Connect AI** displays **ChatGPT / Codex** (with Nemotron supervision when configured). In this GitHub submission build, **Connect AI** offers **ChatGPT / Codex + NVIDIA Nemotron** and **OpenAI API + NVIDIA Nemotron**. Do not claim the second button is live until the deployed site actually shows it.
+3. Authorize the AI choice actually available in the environment being evaluated: ChatGPT/Codex on the original live deployment, or Codex / OpenAI API in the GitHub build. `NEBIUS_API_KEY` is required for Nemotron supervision; confirm a real remote call rather than relying on configuration flags.
 4. Request a multi-feature mechanical component. Verify that the model is a real editable B-Rep in the feature tree.
 5. Change one dimension in the **same** project, then inspect a face/edge and export STEP/STL.
 6. Select **Suppliers** from the top navigation. Search a city/address, choose a 5/12/25 km radius, and inspect local directory listings on the map. GPS is optional.
