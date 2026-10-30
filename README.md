@@ -6,6 +6,7 @@
 **Hackathon track:** Best Apps and Agents  
 **AI:** NVIDIA Nemotron 3 Ultra via Nebius Token Factory  
 **CAD kernel:** Open CASCADE / CadQuery  
+**Judge demo login:** Sign in at https://app.cadia.co.kr using the dedicated judge credentials supplied privately in Devpost (not published in this repository).  
 **Judge guide:** [`docs/JUDGE_GUIDE.md`](docs/JUDGE_GUIDE.md) · **3-minute pitch plan:** [`docs/DEMO_3MIN.md`](docs/DEMO_3MIN.md) · **Saved CAD evidence:** [`evidence/`](evidence/)  
 
 ---
