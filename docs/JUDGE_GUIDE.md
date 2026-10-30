@@ -3,6 +3,12 @@
 **Live demo:** https://app.cadia.co.kr
 **Core submission:** browser CAD with one of two AI planning transports, assisted by NVIDIA Nemotron 3 Ultra through Nebius Token Factory.
 
+## Judge demo access
+
+**Demo site:** https://app.cadia.co.kr
+
+Judges can sign in using the dedicated demo account. The login ID and password are supplied separately in the private Devpost judging instructions; they are not stored in this public repository.
+
 ## Fast evaluation
 
 1. Launch CADia and open a project.
