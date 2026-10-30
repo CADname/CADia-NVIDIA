@@ -16,6 +16,10 @@ CADia
 
 https://app.cadia.co.kr
 
+## Judge access
+
+The live demo uses a dedicated judge account. Share the judge username and password in Devpost's private judging instructions; do not publish credentials in this public GitHub repository.
+
 ## Source
 
 https://github.com/CADname/CADia
